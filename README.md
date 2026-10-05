@@ -57,6 +57,8 @@ Negative results from the paper:
 
     silva/run_hyb.sh          # answering MEMs with many occurrences by their LCA (rz_classify -H / -A)
     silva/run_vfy_acc.sh      # verifying digested MEMs against the DNA (rz-classify -V)
+    silva/run_kebab.sh        # ideal KeBaB pseudo-MEMs before undigested BML (RZ_KEBAB=k)
+    silva/run_trim.sh         # what a one-level phrase index would lose (RZ_TRIM, RZ_TRIMFIX)
 
 `silva/test_bml.sh` and `silva/test_mem.sh` are quick consistency checks. They confirm that all backends give
 identical answers, and `RZ_BML_CHECK=1` compares BML against brute force.

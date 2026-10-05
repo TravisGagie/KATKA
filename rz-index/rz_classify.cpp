@@ -93,6 +93,9 @@ static std::vector<u64> TL;   // -V: verify digested MEMs against the DNA
 // -H T / -A a (with -l): answer a MEM by its LCA (the rz-index's grids) instead of listing its occurrences
 // when it has more than T occurrences, or when occ >= a * (number of sequences in the documents between its two
 // ends, i.e. in the LCA's subtree; -N gives the sequences per document)
+static u64 TRIM_FIX = 0; static bool TRIM_FIXON = false;
+static u64 TRIM_K = 0, TRIM_W = 0, TR_mems = 0, TR_trim = 0, TR_skip = 0;   // RZ_TRIM=k,w: emulate a phrase index (minimizer phrases) by trimming MEMs
+static u64 KEBAB_K = 0, KB_total = 0, KB_kept = 0;   // RZ_KEBAB=k: ideal KeBaB pseudo-MEMs before BML
 static u64 HYB_T = 0; static double HYB_A = 0; static bool HYB = false; static u64 NHYB = 0;
 static std::vector<u64> NSEQ;               // -N: prefix sums of the number of sequences per document
 template <class E, class SV>
@@ -444,14 +447,45 @@ void classify_bml_dna(E &E_, rz::index &Z, const string &read, u64 L, bool list,
     char buf[96];
     static const bool check = getenv("RZ_BML_CHECK") != nullptr;
     u64 nfeat0 = st.nfeat, i = 0, n0 = read.size();
+    std::vector<std::pair<u64, u64>> segs;           // (start, length): maximal A/C/G/T runs, or pseudo-MEMs (RZ_KEBAB)
     while (i < n0) {
         while (i < n0 && rz::dg_b2(read[i]) < 0) ++i;
         u64 r0 = i;
         while (i < n0 && rz::dg_b2(read[i]) >= 0) ++i;
         u64 n = i - r0;
+        KB_total += n;
+        if (!KEBAB_K || n < KEBAB_K) { segs.push_back({r0, n}); continue; }
+        // ideal KeBaB (exact k-mer membership, i.e. a filter without false positives; not timed, not counted
+        // as steps): split the run into maximal substrings all of whose k-mers occur in the database
+        u64 K = KEBAB_K, s0 = 0; bool open = false;
+        for (u64 p = 0; p + K <= n; ++p) {
+            St c = E_.full(); bool ok = true;
+            for (u64 j = p + K; j > p; --j) if (!E_.step(c, (unsigned char)read[r0 + j - 1])) { ok = false; break; }
+            if (ok && !open) { s0 = p; open = true; }
+            if (!ok && open) { segs.push_back({r0 + s0, p + K - 1 - s0}); open = false; }
+        }
+        if (open) segs.push_back({r0 + s0, n - s0});
+    }
+    for (auto sg : segs) {
+        u64 r0 = sg.first, n = sg.second;
         if (n < L) continue;
+        KB_kept += n;
         const char *R = read.data() + r0;
         std::vector<std::pair<u64, u64>> found;
+        static std::vector<char> tsel;               // RZ_TRIM: minimizer positions (all tied minima) of this run
+        if (TRIM_K && n >= TRIM_K) {
+            u64 k = TRIM_K, W = TRIM_W - TRIM_K + 1, nk = n - k + 1;
+            std::vector<u64> h(nk); uint32_t mask = (uint32_t)((1ull << (2 * k)) - 1), fw = 0;
+            for (u64 t = 0; t < n; ++t) {
+                fw = ((fw << 2) | (uint32_t)rz::dg_b2(R[t])) & mask;
+                if (t + 1 >= k) { uint32_t rc = rz::dg_rc_code(fw, (int)k); h[t + 1 - k] = rz::dg_mix(fw < rc ? fw : rc); }
+            }
+            tsel.assign(nk, 0);
+            for (u64 y = 0; y + W <= nk; ++y) {
+                u64 mn = ~0ull; for (u64 q = y; q < y + W; ++q) mn = std::min(mn, h[q]);
+                for (u64 q = y; q < y + W; ++q) if (h[q] == mn) tsel[q] = 1;
+            }
+        }
         u64 x = 0;
         while (x + L <= n) {
             double t1 = rz::now();
@@ -471,8 +505,32 @@ void classify_bml_dna(E &E_, rz::index &Z, const string &read, u64 L, bool list,
             if constexpr (E::isrz) {
               if (TAGX) {
                 t2 = rz::now(); st.tsearch += t2 - t1;
-                TL.clear(); TAGX->list(E::sp(xr), E::ep(xr), TL); std::sort(TL.begin(), TL.end());
-                snprintf(buf, sizeof buf, "[%lu,%lu] {", r0 + a, r0 + e - 1); line += buf;
+                u64 oa = a, oe = e;                  // reported interval (read-run coordinates, half-open)
+                St li = xr; bool skip = false;
+                if (TRIM_K) {                        // interior: full phrases whose boundaries every occurrence of the MEM shares
+                    u64 k = TRIM_K, W = TRIM_W - TRIM_K + 1;
+                    long zlo = (long)(a + W - 1), zhi = (long)e - (long)k - (long)W + 1;   // boundaries determined inside R[a..e)
+                    long b1 = -1, b2 = -1;
+                    for (long q = std::max(zlo, 0L); q <= zhi && q < (long)tsel.size(); ++q) if (tsel[q]) { if (b1 < 0) b1 = q; b2 = q; }
+                    if (b1 < 0 || b2 == b1) skip = true;
+                    else {
+                        oa = (u64)b1; oe = (u64)b2 + k;
+                        St c = E_.full(); bool ok = true;
+                        for (u64 q = oe; q > oa; --q) if (!E_.step(c, (unsigned char)R[q - 1])) { ok = false; break; }
+                        if (!ok) skip = true; else li = c;
+                        ++TR_mems; TR_trim += (e - a) - (oe - oa);
+                    }
+                    if (skip) ++TR_skip;
+                    t2 = rz::now();                  // the emulation's extra search is not timed
+                }
+                if (TRIM_FIXON) {                    // RZ_TRIMFIX=t: drop t bases at each end
+                    if (e - a <= 2 * TRIM_FIX) skip = true;
+                    else { oa = a + TRIM_FIX; oe = e - TRIM_FIX; St c = E_.full(); for (u64 q = oe; q > oa; --q) E_.step(c, (unsigned char)R[q - 1]); li = c; }
+                    t2 = rz::now();
+                }
+                if (skip) { x = e - L + 1; continue; }
+                TL.clear(); TAGX->list(E::sp(li), E::ep(li), TL); std::sort(TL.begin(), TL.end());
+                snprintf(buf, sizeof buf, "[%lu,%lu] {", r0 + oa, r0 + oe - 1); line += buf;
                 if (TAGLIST) { for (u64 q = 0; q < TL.size(); ++q) { snprintf(buf, sizeof buf, q ? ",%lu" : "%lu", TL[q]); line += buf; } st.nlisted += TL.size(); }
                 else { snprintf(buf, sizeof buf, "%lu,%lu", TL.front(), TL.back()); line += buf; }
                 line += "} ";
@@ -534,6 +592,9 @@ int main(int argc, char **argv) {
         else { fputs(usage, stderr); return 1; }
     }
     if (argc - optind != 3) { fputs(usage, stderr); return 1; }
+    if (const char *kb = getenv("RZ_KEBAB")) KEBAB_K = std::stoull(kb);
+    if (const char *tf = getenv("RZ_TRIMFIX")) { TRIM_FIX = std::stoull(tf); TRIM_FIXON = true; }
+    if (const char *tr = getenv("RZ_TRIM")) { TRIM_K = std::stoull(tr); const char *c = strchr(tr, ','); TRIM_W = c ? std::stoull(c + 1) : 11; }
     rz::index Z; { std::ifstream in(argv[optind], std::ios::binary); Z.load(in); }
     rz::aux_index A;
     if (!auxfile.empty()) { std::ifstream in(auxfile, std::ios::binary); A.load(in); Z.aux = &A; }
@@ -608,5 +669,7 @@ int main(int argc, char **argv) {
             st.nreads, bmlL ? "MEMs" : mem ? "MEMs" : "phrases", st.nfeat, st.nfeat ? (double)st.totlen / st.nfeat : 0.0, st.nfail,
             st.nreads ? (double)st.steps / st.nreads : 0.0, st.tsearch, srfile.empty() ? "rz ends" : "sr ends", st.tquery,
             1e6 * (st.tsearch + st.tquery) / (st.nreads ? st.nreads : 1), 1e6 * st.tquery / (st.nfeat ? st.nfeat : 1));
+    if (TRIM_K) fprintf(stderr, "trim k=%lu w=%lu: %lu MEMs trimmed by %.1f bases on average, %lu MEMs dropped\n", TRIM_K, TRIM_W, TR_mems, TR_mems ? (double)TR_trim / TR_mems : 0.0, TR_skip);
+    if (KEBAB_K) fprintf(stderr, "kebab k=%lu: %.1f%% of read bases in pseudo-MEMs of length >= L\n", KEBAB_K, KB_total ? 100.0 * KB_kept / KB_total : 0.0);
     return st.nfail ? 2 : 0;
 }
