@@ -499,9 +499,13 @@ struct index {
         out.write((char *)&N, 8); out.write((char *)&nstr, 8);
         return 16 + bwt.serialize(out) + Bs.serialize(out) + L.serialize(out) + R.serialize(out);
     }
-    void load(std::istream &in) {
+    // grids = false skips the LZ77 grids (the leftmost/rightmost-occurrence queries), which listing does not need
+    bool has_grids = true;                // false if built with rz-build -G, or loaded without them
+    void load(std::istream &in, bool grids = true) {
         in.read((char *)&N, 8); in.read((char *)&nstr, 8);
-        bwt.load(in); Bs.load(in); L.load(in); R.load(in);
+        bwt.load(in); Bs.load(in);
+        if (!grids || in.peek() == std::char_traits<char>::eof()) { has_grids = false; return; }
+        L.load(in); R.load(in);
     }
 };
 

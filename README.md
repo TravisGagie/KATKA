@@ -53,6 +53,10 @@ building the index. It can be resumed.
 On a laptop CPU with performance and efficiency cores, run `PIN=0 ./demo_quick.sh` so the single-thread timing
 stays on one core.
 
+`silva/build_katka.sh` builds only what you ask for: by default, just the default configuration's index. Its
+first lines list the options, such as `INDEXES="rz rzdg"` for digests too, `TAGS`, `CSA`, `SR` and `GRIDS` for the
+other structures in the paper, and `ALL=1` for everything.
+
 ## Full demo: the paper's experiments
 
     ./demo_full.sh
@@ -74,7 +78,7 @@ and its Pareto set end up in `silva/work/pareto_counts.txt`.
 `silva/run_cliffy.sh` and `silva/run_katka.sh` run Cliffy and KATKA on the paper's reads, on one machine:
 
     ./setup_deps.sh && make -C rz-index DEPS=$PWD/deps
-    ALL=1 silva/build_katka.sh            # reference and our indexes
+    INDEXES="rz rzdg" silva/build_katka.sh   # reference and our default indexes, with and without digests
     silva/get_reads.sh                    # the paper's reads
     git clone https://github.com/oma219/cliffy.git silva/cliffy && git -C silva/cliffy checkout 3763529
     silva/build_cliffy.sh                 # check silva/build_cliffy.log

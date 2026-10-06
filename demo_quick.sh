@@ -16,7 +16,7 @@ silva/build_katka.sh
 mkdir -p $W/reads/sample2000
 for r in V1_V2 V3_V4 V4_V4 V4_V5; do
   mkdir -p $W/reads/aquatic/$r
-  cp -n $S/data/sample2000/${r}_seqtax.txt $W/reads/aquatic/$r/
-  for m in 1 2; do cp -n $S/data/sample2000/${r}_mate_$m.fq.gz $W/reads/sample2000/; done
+  [ -e $W/reads/aquatic/$r/${r}_seqtax.txt ] || cp $S/data/sample2000/${r}_seqtax.txt $W/reads/aquatic/$r/
+  for m in 1 2; do f=$S/data/sample2000/${r}_mate_$m.fq.gz; [ -e $W/reads/sample2000/$(basename $f) ] || cp $f $W/reads/sample2000/; done
 done
 OURS="ud_L30" EVERY=2000 silva/run_katka.sh

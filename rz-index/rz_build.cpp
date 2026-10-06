@@ -16,6 +16,9 @@
 //   -a           also build the baseline r-index on the same BWT: <out>.rix
 //   -A           build only the baseline r-index (<out>.rix); the parse arguments are ignored
 //                (pass "-").  Building the two indexes in separate runs lowers peak memory.
+//   -G           no grids: <out>.rz holds only the RLBWT and the strand starts, which is all that
+//                listing with tag arrays or sr-indexes needs (not the rz-index's own LCA queries);
+//                the parse arguments are ignored (pass "-"), so no LZ77 parses are needed
 // writes <out>.rz
 //
 // No suffix array is built.  The BWT rows of the O(z) positions we need (suffixes after
@@ -48,13 +51,14 @@ static vector<u64> read_u64s(const string &f) {
 
 int main(int argc, char **argv) {
     u64 step = 0;
-    bool baseline = false, sides = true;
+    bool baseline = false, sides = true, nogrids = false;
     int opt;
-    const char *usage = "usage: rz-build [-s step] [-a|-A] <S> <bwt> <left.ends> <right.ends> <S.tbl> <out-prefix>\n";
-    while ((opt = getopt(argc, argv, "s:aA")) != -1) {
+    const char *usage = "usage: rz-build [-s step] [-a|-A|-G] <S> <bwt> <left.ends> <right.ends> <S.tbl> <out-prefix>\n";
+    while ((opt = getopt(argc, argv, "s:aAG")) != -1) {
         if (opt == 's') step = std::stoull(optarg);
         else if (opt == 'a') baseline = true;
         else if (opt == 'A') { baseline = true; sides = false; }
+        else if (opt == 'G') nogrids = true;
         else { std::cerr << usage; return 1; }
     }
     if (argc - optind != 6) { std::cerr << usage; return 1; }
@@ -112,6 +116,15 @@ int main(int argc, char **argv) {
     doff.push_back(N);
     if (n != N + K) { std::cerr << "BWT length " << n << " != |S| + " << K << "\n"; return 1; }
     std::cerr << "      n=" << n << " r=" << R << " strings=" << K << "\n";
+    if (nogrids) {                              // RLBWT and strands only
+        std::ofstream o(out + ".rz", std::ios::binary);
+        o.write((char *)&idx.N, 8); o.write((char *)&idx.nstr, 8);
+        u64 bytes = 16 + idx.bwt.serialize(o) + idx.Bs.serialize(o);
+        o.close(); fclose(Sfp);
+        std::cout << "N=" << N << " genomes=" << idx.nstr / 2 << " r=" << R << " rz-index without grids, bytes=" << bytes
+                  << "\nbuild time " << now() - t0 << "s\n";
+        return 0;
+    }
 
     // ---- parses -----------------------------------------------------------------------------
     std::cerr << "[2/6] reading parses\n";

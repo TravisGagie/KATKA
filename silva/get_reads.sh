@@ -13,5 +13,5 @@ if [ ! -s $W/reads/sample50/V4_V5_mate_2.fq.gz ]; then
   echo "168ffc65ca1070f730272a16bc6532cb  $W/katka_silva_sample50.tar.gz" | md5sum -c --quiet
   tar xzf $W/katka_silva_sample50.tar.gz -C $W && rm $W/katka_silva_sample50.tar.gz
 fi
-for r in V1_V2 V3_V4 V4_V4 V4_V5; do mkdir -p $W/reads/aquatic/$r; cp -n $W/reads/sample50/${r}_seqtax.txt $W/reads/aquatic/$r/; done
+for r in V1_V2 V3_V4 V4_V4 V4_V5; do mkdir -p $W/reads/aquatic/$r; f=$W/reads/sample50/${r}_seqtax.txt; [ -e $W/reads/aquatic/$r/$(basename $f) ] || cp $f $W/reads/aquatic/$r/; done
 ls $W/reads/sample50

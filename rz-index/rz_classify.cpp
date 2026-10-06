@@ -820,7 +820,10 @@ int main(int argc, char **argv) {
     COUNTS = getenv("RZ_COUNTS") != nullptr;
     if (const char *tf = getenv("RZ_TRIMFIX")) { TRIM_FIX = std::stoull(tf); TRIM_FIXON = true; }
     if (const char *tr = getenv("RZ_TRIM")) { TRIM_K = std::stoull(tr); const char *c = strchr(tr, ','); TRIM_W = c ? std::stoull(c + 1) : 11; }
-    rz::index Z; { std::ifstream in(argv[optind], std::ios::binary); Z.load(in); }
+    // the rz-index's grids are needed only for its own LCA queries (no -T or -S, or -H/-A, or -x)
+    const bool grids = !bmlL || (tagfile.empty() && srfile.empty()) || HYB_T || HYB_A > 0 || !auxfile.empty();
+    rz::index Z; { std::ifstream in(argv[optind], std::ios::binary); Z.load(in, grids); }
+    if (grids && !Z.has_grids) { fprintf(stderr, "%s has no grids (built with rz-build -G): use -L with -T or -S\n", argv[optind]); return 1; }
     rz::aux_index A;
     if (!auxfile.empty()) { std::ifstream in(auxfile, std::ios::binary); A.load(in); Z.aux = &A; }
     rz::rlcsa_bwt X;
