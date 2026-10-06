@@ -45,7 +45,12 @@
 #include "sr.hpp"
 #include "vfy.hpp"
 #include "tag.hpp"
+#include "parse.hpp"
 #include <unordered_map>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
 #include <memory>
 #include <fstream>
 #include <unistd.h>
@@ -77,7 +82,7 @@ template <class NAV> struct SrEng {              // backward search with toehold
         s = t; return true;
     }
     std::pair<u64, u64> ends(const St &s) { u64 occ; return S.ends(s.I, s.tk, s.to, s.td, occ); }
-    std::vector<u64> occs;
+    static inline thread_local std::vector<u64> occs;   // per thread (-j)
     // all occurrences, as positions in S
     void list(const St &s, std::vector<u64> &out) {
         occs.clear(); S.collect = &occs; u64 occ; S.ends(s.I, s.tk, s.to, s.td, occ); S.collect = nullptr;
@@ -85,18 +90,79 @@ template <class NAV> struct SrEng {              // backward search with toehold
     }
 };
 
+
+// RZ_COUNTS=1: list each genus with the number of occurrences of the MEM in it, as doc:count
+static bool COUNTS = false;
+static void append_docs(const std::vector<u64> &pos, rz::index &Z, std::vector<u64> &docs, string &out, u64 &nlisted) {
+    char b[48]; docs.clear();
+    for (u64 v : pos) docs.push_back(Z.genome_of(v));
+    std::sort(docs.begin(), docs.end());
+    bool first = true;
+    for (u64 q = 0; q < docs.size();) {
+        u64 r = q; while (r < docs.size() && docs[r] == docs[q]) ++r;
+        if (COUNTS) snprintf(b, sizeof b, first ? "%lu:%lu" : ",%lu:%lu", docs[q], r - q);
+        else snprintf(b, sizeof b, first ? "%lu" : ",%lu", docs[q]);
+        out += b; first = false; ++nlisted; q = r;
+    }
+}
+
 struct Stats { u64 nreads = 0, nfeat = 0, totlen = 0, nfail = 0, steps = 0, nuncl = 0, nlisted = 0, nocc = 0, nver = 0; double tsearch = 0, tquery = 0, tver = 0; };
 static const rz::vfy_index *VFY = nullptr;
 static rz::tag_index *TAGX = nullptr;         // -T: answer from the tag array (list, or LCA = smallest and largest tag)
 static bool TAGLIST = false;
-static std::vector<u64> TL;   // -V: verify digested MEMs against the DNA
+static thread_local std::vector<u64> TL;   // -V: verify digested MEMs against the DNA
+// answer a MEM from the tag array: its genera (-l), with occurrence counts (RZ_COUNTS), or the smallest and largest
+static thread_local std::vector<std::pair<u64, u64>> TC;
+static void tag_answer(u64 sp, u64 ep, string &out, u64 &nlisted) {
+    char b[48];
+    if (TAGLIST && COUNTS) {
+        TAGX->count(sp, ep, TC);
+        for (u64 q = 0; q < TC.size(); ++q) { snprintf(b, sizeof b, q ? ",%lu:%lu" : "%lu:%lu", TC[q].first, TC[q].second); out += b; }
+        nlisted += TC.size(); return;
+    }
+    TL.clear(); TAGX->list(sp, ep, TL); std::sort(TL.begin(), TL.end());
+    if (TAGLIST) { for (u64 q = 0; q < TL.size(); ++q) { snprintf(b, sizeof b, q ? ",%lu" : "%lu", TL[q]); out += b; } nlisted += TL.size(); }
+    else { snprintf(b, sizeof b, "%lu,%lu", TL.front(), TL.back()); out += b; }
+}
+
+// -F t: table of the search states (BWT interval, plus the toehold for the sr-index) of all strings of t
+// symbols (A/C/G/T, or digest bytes with -B), as in Bowtie 2's and Cliffy's ftab, so that a backward search
+// from scratch starts with one lookup instead of t steps.  Not used where every suffix's interval is needed
+// (the rz-index's grids, -H/-A).
+template <class St> struct GTab {
+    int t = 0, sig = 4; std::vector<St> v; std::vector<uint8_t> ok; static inline thread_local u64 lookups = 0;
+    template <class E> void build(E &E_, int tt, int sg) {
+        t = tt; sig = sg;
+        std::vector<St> a{E_.full()}; std::vector<uint8_t> f{1};
+        for (int i = 0; i < t; ++i) {                   // strings of length i -> i + 1, key = c * sig^i + key(w)
+            u64 m = a.size(); std::vector<St> a2(sig * m); std::vector<uint8_t> f2(sig * m, 0);
+            for (int c = 0; c < sig; ++c) {
+                unsigned char ch = sig == 4 ? (unsigned char)"ACGT"[c] : (unsigned char)c;
+                for (u64 w = 0; w < m; ++w) if (f[w]) { St I = a[w]; if (E_.step(I, ch)) { a2[c * m + w] = I; f2[c * m + w] = 1; } }
+            }
+            a.swap(a2); f.swap(f2);
+        }
+        v.swap(a); ok.swap(f);
+    }
+    u64 bytes() const { return v.size() * (sizeof(St) + 1); }
+    // state for the t symbols p[0..t-1], or false if they do not occur
+    bool get(const unsigned char *p, St &I) {
+        u64 key = 0, mul = 1;
+        for (int i = t - 1; i >= 0; --i) { key += (u64)(sig == 4 ? rz::dg_b2((char)p[i]) : p[i]) * mul; mul *= sig; }
+        ++lookups;
+        if (!ok[key]) return false;
+        I = v[key]; return true;
+    }
+};
+template <class St> GTab<St> &gtab() { static GTab<St> g; return g; }
+static int FT_t = 0; static u64 FT_bytes = 0;
 // -H T / -A a (with -l): answer a MEM by its LCA (the rz-index's grids) instead of listing its occurrences
 // when it has more than T occurrences, or when occ >= a * (number of sequences in the documents between its two
 // ends, i.e. in the LCA's subtree; -N gives the sequences per document)
 static u64 TRIM_FIX = 0; static bool TRIM_FIXON = false;
-static u64 TRIM_K = 0, TRIM_W = 0, TR_mems = 0, TR_trim = 0, TR_skip = 0;   // RZ_TRIM=k,w: emulate a phrase index (minimizer phrases) by trimming MEMs
-static u64 KEBAB_K = 0, KB_total = 0, KB_kept = 0;   // RZ_KEBAB=k: ideal KeBaB pseudo-MEMs before BML
-static u64 HYB_T = 0; static double HYB_A = 0; static bool HYB = false; static u64 NHYB = 0;
+static u64 TRIM_K = 0, TRIM_W = 0; static thread_local u64 TR_mems = 0, TR_trim = 0, TR_skip = 0;   // RZ_TRIM=k,w: emulate a phrase index (minimizer phrases) by trimming MEMs
+static u64 KEBAB_K = 0; static thread_local u64 KB_total = 0, KB_kept = 0;   // RZ_KEBAB=k: ideal KeBaB pseudo-MEMs before BML
+static u64 HYB_T = 0; static double HYB_A = 0; static bool HYB = false; static thread_local u64 NHYB = 0;
 static std::vector<u64> NSEQ;               // -N: prefix sums of the number of sequences per document
 template <class E, class SV>
 std::pair<u64, u64> grid_ends(rz::index &Z, const SV &suf, const SV &xiv, u64 m) {
@@ -108,7 +174,7 @@ std::pair<u64, u64> grid_ends(rz::index &Z, const SV &suf, const SV &xiv, u64 m)
 template <class E>
 void classify_read(E &E_, rz::index &Z, const string &s, bool mem, u64 minlen, string &line, Stats &st) {
     typedef typename E::St St;
-    static std::vector<St> ivs, iv2, xiv;
+    static thread_local std::vector<St> ivs, iv2, xiv;
     char buf[96];
     auto emit = [&](u64 i, u64 e, std::pair<u64, u64> r) {   // feature s[i..e)
         if (r.first == rz::NONE) { ++st.nfail; fprintf(stderr, "FAIL read %lu feature [%lu,%lu):", st.nreads, i, e); for (u64 k = i; k < e; ++k) fprintf(stderr, " %d", (unsigned char)s[k]); fprintf(stderr, "\n"); return; }
@@ -214,10 +280,10 @@ void classify_bml(E &E_, rz::index &Z, const string &read, u64 L, bool list, str
     typedef typename E::St St;
     const rz::dg_bytemap &M = rz::bytemap();
     const u64 k = M.k, w = M.w, Wk = w - k + 1;            // window: w bases = Wk k-mers
-    static std::vector<St> ivs, iv2, xiv;
-    static std::vector<u64> h, mlo, mhi, idx, lo, hi, pos, docs;
-    static std::vector<uint32_t> f;
-    static string dg;
+    static thread_local std::vector<St> ivs, iv2, xiv;
+    static thread_local std::vector<u64> h, mlo, mhi, idx, lo, hi, pos, docs;
+    static thread_local std::vector<uint32_t> f;
+    static thread_local string dg;
     char buf[96];
     u64 nfeat0 = st.nfeat;
     u64 i = 0, n0 = read.size();
@@ -258,7 +324,7 @@ void classify_bml(E &E_, rz::index &Z, const string &read, u64 L, bool list, str
         }
         lo.resize(nwin); hi.resize(nwin);
         for (u64 y = 0; y < nwin; ++y) { lo[y] = idx[mlo[y]]; hi[y] = idx[mhi[y]]; }
-        static std::vector<u64> rfirst, rlast;
+        static thread_local std::vector<u64> rfirst, rlast;
         if (VFY) { rfirst.assign(dg.size(), ~0ull); rlast.assign(dg.size(), 0);
             for (u64 p = 0; p < nk; ++p) if (sel[p]) { u64 q = idx[p]; if (rfirst[q] == ~0ull) rfirst[q] = p; rlast[q] = p; } }
         struct vint { u64 s, e, d; };
@@ -274,6 +340,10 @@ void classify_bml(E &E_, rz::index &Z, const string &read, u64 L, bool list, str
             u64 a = lo[x], b = hi[x + L - w];
             St c = E_.full(); u64 j = b + 1;
             if (E::isrz || HYB) { ivs.clear(); ivs.push_back(c); }
+            auto &G = gtab<St>(); bool useG = G.t && !HYB && !VFY && (!E::isrz || TAGX);
+            if (useG && b + 1 >= a + G.t) {
+                St c2 = c; if (G.get((const unsigned char *)dg.data() + b + 1 - G.t, c2)) { c = c2; j = b + 1 - G.t; ++st.steps; }
+            }
             bool fail = false;
             while (j > a) { ++st.steps; if (!E_.step(c, (unsigned char)dg[j - 1])) { fail = true; break; } --j; if (E::isrz || HYB) ivs.push_back(c); }
             if (fail) {                              // dg[j-1..b] does not occur
@@ -286,6 +356,10 @@ void classify_bml(E &E_, rz::index &Z, const string &read, u64 L, bool list, str
             u64 aa = j, e = aa;                      // forward (rc) scan from aa
             St xr = E_.full();
             if (E::isrz || HYB) { xiv.clear(); xiv.push_back(xr); }
+            if (useG && e + G.t <= nd) {
+                unsigned char rcb[8]; for (int q = 0; q < G.t; ++q) rcb[q] = rz::comp((unsigned char)dg[e + G.t - 1 - q]);
+                St x2 = xr; if (G.get(rcb, x2)) { xr = x2; e += G.t; ++st.steps; }
+            }
             while (e < nd) { ++st.steps; if (!E_.step(xr, rz::comp((unsigned char)dg[e]))) break; ++e; if (E::isrz || HYB) xiv.push_back(xr); }
             u64 bb = e - 1, m = e - aa;              // D = dg[aa..bb]
             u64 left = std::lower_bound(lo.begin(), lo.end(), aa) - lo.begin();
@@ -296,10 +370,7 @@ void classify_bml(E &E_, rz::index &Z, const string &read, u64 L, bool list, str
             if constexpr (E::isrz) {
               if (TAGX) {                            // answer from the tag array (rc(D) has the same documents)
                 t2 = rz::now(); st.tsearch += t2 - t1;
-                TL.clear(); TAGX->list(E::sp(xr), E::ep(xr), TL); std::sort(TL.begin(), TL.end());
-                string d = "{";
-                if (TAGLIST) { for (u64 q = 0; q < TL.size(); ++q) { snprintf(buf, sizeof buf, q ? ",%lu" : "%lu", TL[q]); d += buf; } }
-                else { snprintf(buf, sizeof buf, "%lu,%lu", TL.front(), TL.back()); d += buf; }
+                string d = "{"; { u64 nl = 0; tag_answer(E::sp(xr), E::ep(xr), d, nl); st.nlisted += nl; }
                 d += "} "; fr.push_back({left, right, d});
               } else {
                 const std::vector<St> *suf = &ivs;
@@ -326,7 +397,7 @@ void classify_bml(E &E_, rz::index &Z, const string &read, u64 L, bool list, str
                     E_.list(xr, pos); docs.clear();
                     if (VFY) {                       // check every occurrence against the DNA
                         double tv = rz::now();
-                        static std::unordered_map<uint32_t, string> cache; static u64 cread = ~0ull;
+                        static thread_local std::unordered_map<uint32_t, string> cache; static thread_local u64 cread = ~0ull;
                         if (cread != st.nreads) { cache.clear(); cread = st.nreads; }
                         const rz::vfy_index &V = *VFY; const u64 kk = rz::bytemap().k, t = m / 2;
                         const char *RR = read.data() + r0;
@@ -348,7 +419,7 @@ void classify_bml(E &E_, rz::index &Z, const string &read, u64 L, bool list, str
                             else { rp = rlast[aa + t]; fp = rn - V.sym_pos(j, qf + m - 1 - t) - kk; }
                             auto dnacomp = [](char c) -> char { switch (c) { case 'A': return 'T'; case 'C': return 'G'; case 'G': return 'C'; case 'T': return 'A'; default: return 'N'; } };
                             auto ref = [&](u64 x) -> char { return rev ? dnacomp(F[rn - 1 - x]) : F[x]; };
-                            static int dbg = getenv("RZ_VDBG") ? 20 : 0;
+                            static thread_local int dbg = getenv("RZ_VDBG") ? 20 : 0;
                             if (dbg > 0) { --dbg; string a(RR + rp, 12), b; for (u64 x = 0; x < 12 && fp + x < rn; ++x) b.push_back(ref(fp + x));
                                 fprintf(stderr, "VDBG doc %lu rev %d o %lu Lg %u of %lu run %lu qf %lu dlen %u m %lu t %lu rp %lu fp %lu rn %lu read %s ref %s\n",
                                         doc, (int)rev, o, V.dlg[doc], of, j, qf, V.dlen[j], m, t, rp, fp, rn, a.c_str(), b.c_str()); }
@@ -360,10 +431,7 @@ void classify_bml(E &E_, rz::index &Z, const string &read, u64 L, bool list, str
                         }
                         st.tver += rz::now() - tv;
                     }
-                    for (u64 v : pos) docs.push_back(Z.genome_of(v));
-                    std::sort(docs.begin(), docs.end()); docs.erase(std::unique(docs.begin(), docs.end()), docs.end());
-                    string d = "{";
-                    for (u64 q = 0; q < docs.size(); ++q) { snprintf(buf, sizeof buf, q ? ",%lu" : "%lu", docs[q]); d += buf; }
+                    string d = "{"; { u64 nl = 0; append_docs(pos, Z, docs, d, nl); st.nlisted += nl; }
                     d += "} "; fr.push_back({left, right, d});
                 }
             }
@@ -424,11 +492,11 @@ void classify_bml(E &E_, rz::index &Z, const string &read, u64 L, bool list, str
                 all.swap(mx);
             }
             if (all != found) {
-                static u64 bad = 0;
+                static thread_local u64 bad = 0;
                 if (++bad <= 5) { fprintf(stderr, "BML CHECK MISMATCH read %lu: bml", st.nreads); for (auto &p : found) fprintf(stderr, " [%lu,%lu]", p.first, p.second);
                     fprintf(stderr, " brute"); for (auto &p : all) fprintf(stderr, " [%lu,%lu]", p.first, p.second); fprintf(stderr, "\n"); }
             }
-            static u64 runs = 0; ++runs;
+            static thread_local u64 runs = 0; ++runs;
         }
     }
     if (st.nfeat == nfeat0) ++st.nuncl;
@@ -442,8 +510,8 @@ void classify_bml(E &E_, rz::index &Z, const string &read, u64 L, bool list, str
 template <class E>
 void classify_bml_dna(E &E_, rz::index &Z, const string &read, u64 L, bool list, string &line, Stats &st) {
     typedef typename E::St St;
-    static std::vector<St> ivs, iv2, xiv;
-    static std::vector<u64> pos, docs;
+    static thread_local std::vector<St> ivs, iv2, xiv;
+    static thread_local std::vector<u64> pos, docs;
     char buf[96];
     static const bool check = getenv("RZ_BML_CHECK") != nullptr;
     u64 nfeat0 = st.nfeat, i = 0, n0 = read.size();
@@ -472,7 +540,7 @@ void classify_bml_dna(E &E_, rz::index &Z, const string &read, u64 L, bool list,
         KB_kept += n;
         const char *R = read.data() + r0;
         std::vector<std::pair<u64, u64>> found;
-        static std::vector<char> tsel;               // RZ_TRIM: minimizer positions (all tied minima) of this run
+        static thread_local std::vector<char> tsel;               // RZ_TRIM: minimizer positions (all tied minima) of this run
         if (TRIM_K && n >= TRIM_K) {
             u64 k = TRIM_K, W = TRIM_W - TRIM_K + 1, nk = n - k + 1;
             std::vector<u64> h(nk); uint32_t mask = (uint32_t)((1ull << (2 * k)) - 1), fw = 0;
@@ -491,6 +559,10 @@ void classify_bml_dna(E &E_, rz::index &Z, const string &read, u64 L, bool list,
             double t1 = rz::now();
             St c = E_.full(); u64 j = x + L;
             if (E::isrz || HYB) { ivs.clear(); ivs.push_back(c); }
+            auto &G = gtab<St>(); bool useG = G.t && !HYB && (!E::isrz || TAGX);   // the rz-index's grids need every suffix's interval
+            if (useG && L >= (u64)G.t) {
+                St c2 = c; if (G.get((const unsigned char *)R + x + L - G.t, c2)) { c = c2; j = x + L - G.t; ++st.steps; }
+            }
             bool fail = false;
             while (j > x) { ++st.steps; if (!E_.step(c, (unsigned char)R[j - 1])) { fail = true; break; } --j; if (E::isrz || HYB) ivs.push_back(c); }
             if (fail) { st.tsearch += rz::now() - t1; x = j; continue; }      // R[j-1..x+L) does not occur
@@ -499,6 +571,10 @@ void classify_bml_dna(E &E_, rz::index &Z, const string &read, u64 L, bool list,
             u64 a = j, e = a;
             St xr = E_.full();
             if (E::isrz || HYB) { xiv.clear(); xiv.push_back(xr); }
+            if (useG && e + G.t <= n) {                                      // rc(R[a..a+t)) by one lookup
+                unsigned char rcb[32]; for (int q = 0; q < G.t; ++q) rcb[q] = rz::comp((unsigned char)R[e + G.t - 1 - q]);
+                St x2 = xr; if (G.get(rcb, x2)) { xr = x2; e += G.t; ++st.steps; }
+            }
             while (e < n) { ++st.steps; if (!E_.step(xr, rz::comp((unsigned char)R[e]))) break; ++e; if (E::isrz || HYB) xiv.push_back(xr); }
             u64 m = e - a;                                                       // MEM R[a..e)
             double t2;
@@ -529,10 +605,8 @@ void classify_bml_dna(E &E_, rz::index &Z, const string &read, u64 L, bool list,
                     t2 = rz::now();
                 }
                 if (skip) { x = e - L + 1; continue; }
-                TL.clear(); TAGX->list(E::sp(li), E::ep(li), TL); std::sort(TL.begin(), TL.end());
                 snprintf(buf, sizeof buf, "[%lu,%lu] {", r0 + oa, r0 + oe - 1); line += buf;
-                if (TAGLIST) { for (u64 q = 0; q < TL.size(); ++q) { snprintf(buf, sizeof buf, q ? ",%lu" : "%lu", TL[q]); line += buf; } st.nlisted += TL.size(); }
-                else { snprintf(buf, sizeof buf, "%lu,%lu", TL.front(), TL.back()); line += buf; }
+                tag_answer(E::sp(li), E::ep(li), line, st.nlisted);
                 line += "} ";
               } else {
                 const std::vector<St> *suf = &ivs;
@@ -556,12 +630,9 @@ void classify_bml_dna(E &E_, rz::index &Z, const string &read, u64 L, bool list,
                 } else if (std::pair<u64, u64> rr; HYB && hyb_lca<E>(E_, Z, xr, ivs, iv2, xiv, m, b - 1, e - 1, a, [&](u64 q) { return (unsigned char)R[q]; }, st, rr)) {
                     snprintf(buf, sizeof buf, "[%lu,%lu] <%lu,%lu> ", r0 + a, r0 + e - 1, Z.genome_of(rr.first), Z.genome_of(rr.second)); line += buf;
                 } else {
-                    E_.list(xr, pos); docs.clear();
-                    for (u64 v : pos) docs.push_back(Z.genome_of(v));
-                    std::sort(docs.begin(), docs.end()); docs.erase(std::unique(docs.begin(), docs.end()), docs.end());
-                    st.nlisted += docs.size();
+                    E_.list(xr, pos);
                     snprintf(buf, sizeof buf, "[%lu,%lu] {", r0 + a, r0 + e - 1); line += buf;
-                    for (u64 q = 0; q < docs.size(); ++q) { snprintf(buf, sizeof buf, q ? ",%lu" : "%lu", docs[q]); line += buf; }
+                    append_docs(pos, Z, docs, line, st.nlisted);
                     line += "} ";
                 }
             }
@@ -584,15 +655,169 @@ void classify_bml_dna(E &E_, rz::index &Z, const string &read, u64 L, bool list,
     if (st.nfeat == nfeat0) ++st.nuncl;
 }
 
+// -P f: Boyer-Moore-Li with a two-level index (parse.hpp): backward extensions step base by base in the
+// text's RLCSA until the match starts with a closed syncmer, then phrase by phrase in the parse's RLCSA,
+// then base by base again through the partial phrase at the left end.  Same MEMs as classify_bml_dna;
+// answered with the tag array (-T).
+static const rz::parse_index *PIX = nullptr;
+static thread_local u64 PX_text = 0, PX_phr = 0, PX_map = 0;
+struct RunParse {                                  // closed syncmers and (lazily) phrase ids of one A/C/G/T run
+    const unsigned char *R = nullptr; u64 m = 0; bool built = false;
+    std::vector<char> sy; std::vector<long> si; std::vector<u64> pos; mutable std::vector<uint32_t> pid;
+    void reset(const unsigned char *r, u64 len) { R = r; m = len; built = false; }
+    void build() {
+        int k = PIX->k;
+        rz::closed_syncmers(R, m, k, PIX->s, sy);
+        si.assign(m + 1, -1); pos.clear();
+        for (u64 q = 0; q + k <= m; ++q) if (sy[q]) { si[q] = (long)pos.size(); pos.push_back(q); }
+        pid.assign(pos.size(), ~0u); built = true;
+    }
+    uint32_t phrase(u64 j) const {                 // phrase from pos[j] to pos[j+1] + k
+        if (pid[j] == ~0u) pid[j] = PIX->id(rz::ph_hash(R + pos[j], pos[j + 1] + PIX->k - pos[j]));
+        return pid[j];
+    }
+};
+// extend R[..y) to the left as far as possible; returns the leftmost start and the BWT interval
+template <class E>
+u64 ext_left_2l(E &E_, const unsigned char *R, const RunParse &P, u64 y, typename E::St &I) {
+    I = E_.full(); u64 j = y, k = PIX->k, noParse = ~0ull, pl = 0, pr = 0; bool inP = false; long qi = -1;
+    auto &G = gtab<typename E::St>();
+    if (G.t && y >= (u64)G.t && G.get(R + y - G.t, I)) {
+        j = y - G.t;
+        if (P.si[j] >= 0 && j + k <= y) { PIX->to_parse(I.sp, I.ep, pl, pr); inP = true; qi = P.si[j]; ++PX_map; }
+    }
+    while (true) {
+        if (!inP) {
+            if (j == 0 || !E_.step(I, R[j - 1])) break;
+            --j; ++PX_text;
+            if (P.si[j] >= 0 && j + k <= y && j < noParse) { PIX->to_parse(I.sp, I.ep, pl, pr); inP = true; qi = P.si[j]; ++PX_map; }
+        } else {
+            if (qi > 0 && PIX->step(pl, pr, P.phrase(qi - 1))) { ++PX_phr; --qi; j = P.pos[qi]; continue; }
+            if (qi > 0) ++PX_phr;
+            PIX->to_text(pl, pr, I.sp, I.ep); inP = false; noParse = j; ++PX_map;
+        }
+    }
+    if (inP) { PIX->to_text(pl, pr, I.sp, I.ep); ++PX_map; }
+    return j;
+}
+template <class E>
+void classify_bml_2l(E &E_, rz::index &Z, const string &read, u64 L, string &line, Stats &st) {
+    typedef typename E::St St;
+    static thread_local RunParse P, Q; static thread_local string rc;
+    char buf[96]; u64 nfeat0 = st.nfeat, i = 0, n0 = read.size();
+    while (i < n0) {
+        while (i < n0 && rz::dg_b2(read[i]) < 0) ++i;
+        u64 r0 = i; while (i < n0 && rz::dg_b2(read[i]) >= 0) ++i;
+        u64 m = i - r0; if (m < L) continue;
+        double t1 = rz::now();
+        const unsigned char *R = (const unsigned char *)read.data() + r0;
+        rc.resize(m); for (u64 t = 0; t < m; ++t) rc[t] = rz::comp((unsigned char)R[m - 1 - t]);
+        const unsigned char *RC = (const unsigned char *)rc.data();
+        P.reset(R, m); P.build(); Q.reset(RC, m);
+        u64 x = 0;
+        while (x + L <= m) {
+            St I, J;
+            u64 a = ext_left_2l(E_, R, P, x + L, I);
+            if (a > x) { x = a; continue; }
+            if (!Q.built) Q.build();
+            u64 e = m - ext_left_2l(E_, RC, Q, m - a, J);      // J: interval of rc(R[a..e))
+            double t2 = rz::now(); st.tsearch += t2 - t1;
+            snprintf(buf, sizeof buf, "[%lu,%lu] {", r0 + a, r0 + e - 1); line += buf;
+            tag_answer(J.sp, J.ep, line, st.nlisted);
+            line += "} ";
+            t1 = rz::now(); st.tquery += t1 - t2;
+            ++st.nfeat; st.totlen += e - a;
+            x = e - L + 1;
+        }
+        st.tsearch += rz::now() - t1;
+    }
+    st.steps = PX_text + PX_phr;
+    if (st.nfeat == nfeat0) ++st.nuncl;
+}
+
+// -W: forward-backward (Li 2012) instead of BML: find every MEM, left to right (forward extension from the
+// start of a MEM, then backward search from one past its end for the start of the next), but list only the
+// MEMs of at least L bases.  Uses the lookup table (-F) and the two-level index (-P) when given.
+static bool FB = false;
+template <class E>
+u64 ext_left_plain(E &E_, const unsigned char *R, u64 y, typename E::St &I) {
+    I = E_.full(); u64 j = y;
+    auto &G = gtab<typename E::St>();
+    if (G.t && y >= (u64)G.t) { typename E::St c2 = I; if (G.get(R + y - G.t, c2)) { I = c2; j = y - G.t; } }
+    while (j > 0 && E_.step(I, R[j - 1])) { --j; ++PX_text; }
+    return j;
+}
+template <class E>
+void classify_fb(E &E_, rz::index &Z, const string &read, u64 L, string &line, Stats &st) {
+    typedef typename E::St St;
+    static thread_local RunParse P, Q; static thread_local string rc;
+    char buf[96]; u64 nfeat0 = st.nfeat, i = 0, n0 = read.size();
+    while (i < n0) {
+        while (i < n0 && rz::dg_b2(read[i]) < 0) ++i;
+        u64 r0 = i; while (i < n0 && rz::dg_b2(read[i]) >= 0) ++i;
+        u64 m = i - r0; if (m < L) continue;
+        double t1 = rz::now();
+        const unsigned char *R = (const unsigned char *)read.data() + r0;
+        rc.resize(m); for (u64 t = 0; t < m; ++t) rc[t] = rz::comp((unsigned char)R[m - 1 - t]);
+        const unsigned char *RC = (const unsigned char *)rc.data();
+        if (PIX) { P.reset(R, m); P.build(); Q.reset(RC, m); Q.build(); }
+        auto ext = [&](const unsigned char *S, RunParse &PP, u64 y, St &I) { return PIX ? ext_left_2l(E_, S, PP, y, I) : ext_left_plain(E_, S, y, I); };
+        u64 s0 = 0;
+        while (s0 < m) {
+            St I, J;
+            u64 e = m - ext(RC, Q, m - s0, J);                 // R[s0..e) is the MEM starting at s0
+            if (e <= s0) { ++s0; continue; }
+            if (e - s0 >= L) {
+                double t2 = rz::now(); st.tsearch += t2 - t1;
+                snprintf(buf, sizeof buf, "[%lu,%lu] {", r0 + s0, r0 + e - 1); line += buf;
+                tag_answer(J.sp, J.ep, line, st.nlisted);
+                line += "} ";
+                t1 = rz::now(); st.tquery += t1 - t2;
+                ++st.nfeat; st.totlen += e - s0;
+            }
+            if (e >= m) break;
+            u64 s2 = ext(R, P, e + 1, I);                    // leftmost start of a match ending at R[e]
+            s0 = s2 > e ? e + 1 : s2;
+        }
+        st.tsearch += rz::now() - t1;
+    }
+    st.steps = PX_text + PX_phr;
+    if (st.nfeat == nfeat0) ++st.nuncl;
+}
+
+static int NJ = 1;                           // -j: threads
+static std::mutex CNT_m;
+static u64 T_TR_mems = 0, T_TR_trim = 0, T_TR_skip = 0, T_KB_total = 0, T_KB_kept = 0, T_NHYB = 0, T_PX_text = 0, T_PX_phr = 0, T_PX_map = 0, T_TAG_lf = 0;
+static void flush_counters() {                   // add this thread's counters to the totals
+    std::lock_guard<std::mutex> g(CNT_m);
+    T_TR_mems += TR_mems; T_TR_trim += TR_trim; T_TR_skip += TR_skip; T_KB_total += KB_total; T_KB_kept += KB_kept; T_NHYB += NHYB;
+    T_PX_text += PX_text; T_PX_phr += PX_phr; T_PX_map += PX_map; if (TAGX) T_TAG_lf += TAGX->lf_steps;
+    TR_mems = TR_trim = TR_skip = KB_total = KB_kept = NHYB = PX_text = PX_phr = PX_map = 0; if (TAGX) TAGX->lf_steps = 0;
+}
+static void add_stats(Stats &a, const Stats &b) {
+    a.nreads += b.nreads; a.nfeat += b.nfeat; a.totlen += b.totlen; a.nfail += b.nfail; a.steps += b.steps; a.nuncl += b.nuncl;
+    a.nlisted += b.nlisted; a.nocc += b.nocc; a.nver += b.nver; a.tsearch += b.tsearch; a.tquery += b.tquery; a.tver += b.tver;
+}
+
 int main(int argc, char **argv) {
-    string auxfile, csafile, mapfile, srfile, rixfile, vfyfile, nseqfile, tagfile; u64 minlen = 1, bmlL = 0; int opt; bool mem = false, list = false;
-    const char *usage = "usage: rz-classify [-M | -L bases [-l]] [-x aux] [-m minlen] [-C csa] [-B map] [-S sri -R rix] index.rz reads.fq out.listings\n";
-    while ((opt = getopt(argc, argv, "Mlx:m:C:B:S:R:L:V:H:A:N:T:")) != -1) {
-        if (opt == 'x') auxfile = optarg; else if (opt == 'm') minlen = std::stoull(optarg); else if (opt == 'M') mem = true; else if (opt == 'l') list = true; else if (opt == 'L') bmlL = std::stoull(optarg); else if (opt == 'V') vfyfile = optarg; else if (opt == 'H') HYB_T = std::stoull(optarg); else if (opt == 'A') HYB_A = std::stod(optarg); else if (opt == 'N') nseqfile = optarg; else if (opt == 'T') tagfile = optarg; else if (opt == 'C') csafile = optarg; else if (opt == 'B') mapfile = optarg; else if (opt == 'S') srfile = optarg; else if (opt == 'R') rixfile = optarg;
+    string pixfile, auxfile, csafile, mapfile, srfile, rixfile, vfyfile, nseqfile, tagfile; u64 minlen = 1, bmlL = 0; int opt; bool mem = false, list = false;
+    const char *usage = "usage: rz-classify [-j threads] [-M | -L bases [-l]] [-x aux] [-m minlen] [-C csa] [-B map] [-S sri -R rix] index.rz reads.fq out.listings\n";
+    while ((opt = getopt(argc, argv, "MWlx:m:C:B:S:R:L:V:H:A:N:T:P:F:j:")) != -1) {
+        if (opt == 'x') auxfile = optarg; else if (opt == 'm') minlen = std::stoull(optarg); else if (opt == 'M') mem = true; else if (opt == 'W') FB = true; else if (opt == 'l') list = true; else if (opt == 'L') bmlL = std::stoull(optarg); else if (opt == 'V') vfyfile = optarg; else if (opt == 'H') HYB_T = std::stoull(optarg); else if (opt == 'A') HYB_A = std::stod(optarg); else if (opt == 'N') nseqfile = optarg; else if (opt == 'T') tagfile = optarg; else if (opt == 'P') pixfile = optarg; else if (opt == 'F') FT_t = std::stoi(optarg); else if (opt == 'j') NJ = std::max(1, std::stoi(optarg)); else if (opt == 'C') csafile = optarg; else if (opt == 'B') mapfile = optarg; else if (opt == 'S') srfile = optarg; else if (opt == 'R') rixfile = optarg;
         else { fputs(usage, stderr); return 1; }
     }
     if (argc - optind != 3) { fputs(usage, stderr); return 1; }
+    if (FT_t && (!bmlL || FT_t > (rz::bytemap().on ? 3 : 13))) { fprintf(stderr, "-F needs -L, and t <= 13 (t <= 3 with -B)\n"); return 1; }
+    if (FB && (!bmlL || tagfile.empty() || rz::bytemap().on)) { fprintf(stderr, "-W needs -L and -T, without -B\n"); return 1; }
+    static rz::parse_index PX;
+    if (!pixfile.empty()) {
+        if (!bmlL || tagfile.empty() || rz::bytemap().on) { fprintf(stderr, "-P needs -L and -T, without -B\n"); return 1; }
+        if (!PX.load(pixfile)) { fprintf(stderr, "cannot load %s\n", pixfile.c_str()); return 1; }
+        PIX = &PX;
+        if (FT_t > PIX->k) { fprintf(stderr, "-F t needs t <= k with -P\n"); return 1; }
+    }
     if (const char *kb = getenv("RZ_KEBAB")) KEBAB_K = std::stoull(kb);
+    COUNTS = getenv("RZ_COUNTS") != nullptr;
     if (const char *tf = getenv("RZ_TRIMFIX")) { TRIM_FIX = std::stoull(tf); TRIM_FIXON = true; }
     if (const char *tr = getenv("RZ_TRIM")) { TRIM_K = std::stoull(tr); const char *c = strchr(tr, ','); TRIM_W = c ? std::stoull(c + 1) : 11; }
     rz::index Z; { std::ifstream in(argv[optind], std::ios::binary); Z.load(in); }
@@ -625,30 +850,69 @@ int main(int argc, char **argv) {
         if (!VV.load(vfyfile)) { fprintf(stderr, "cannot load %s\n", vfyfile.c_str()); return 1; }
         VFY = &VV;
     }
+    if (NJ > 1 && (!bmlL || (srfile.empty() && tagfile.empty()) || VFY || HYB)) { fprintf(stderr, "-j needs -L with -T or -S, without -V, -H or -A\n"); return 1; }
     std::ifstream fq(argv[optind + 1]);
     FILE *out = fopen(argv[optind + 2], "w");
     if (!fq || !out) { fprintf(stderr, "cannot open reads or output\n"); return 1; }
 
-    Stats st; string h, s, plus, q, line;
+    Stats st; double WALL = 0;
     auto loop = [&](auto &E_) {
-        while (std::getline(fq, h) && std::getline(fq, s) && std::getline(fq, plus) && std::getline(fq, q)) {
-            ++st.nreads;
-            for (auto &c : s) c = (char)toupper((unsigned char)c);
-            size_t sp_ = h.find_first_of(" \t");
-            string name = h.substr(1, sp_ == string::npos ? string::npos : sp_ - 1);
-            line.clear();
-            if (bmlL) {
-                bool l2 = std::decay_t<decltype(E_)>::isrz ? false : list;
-                if (rz::bytemap().on) classify_bml(E_, Z, s, bmlL, l2, line, st);
-                else classify_bml_dna(E_, Z, s, bmlL, l2, line, st);
-            } else {
-                if (rz::bytemap().on) s = rz::digest_mapped(s);
-                classify_read(E_, Z, s, mem, minlen, line, st);
-            }
-            fprintf(out, ">%s\n%s\n", name.c_str(), line.c_str());
+        if (FT_t) {
+            auto &G = gtab<typename std::decay_t<decltype(E_)>::St>();
+            double t0 = rz::now(); G.build(E_, FT_t, rz::bytemap().on ? 256 : 4); FT_bytes = G.bytes();
+            fprintf(stderr, "lookup table: t=%d, %.1f MB, built in %.1f s\n", FT_t, G.bytes() / 1e6, rz::now() - t0);
         }
+        // reads are taken in chunks of CH by NJ workers and written back in input order
+        const size_t CH = 256; std::mutex in_m, out_m; std::condition_variable out_cv; u64 rseq = 0, wseq = 0; bool eof = false;
+        std::vector<Stats> tst(NJ);
+        auto work = [&](int tid) {
+            Stats &ts = tst[tid]; std::vector<string> nm, sq, ln; string h, s, plus, q;
+            for (;;) {
+                u64 my;
+                {
+                    std::lock_guard<std::mutex> g(in_m); nm.clear(); sq.clear();
+                    while (!eof && nm.size() < CH) {
+                        if (!(std::getline(fq, h) && std::getline(fq, s) && std::getline(fq, plus) && std::getline(fq, q))) { eof = true; break; }
+                        for (auto &c : s) c = (char)toupper((unsigned char)c);
+                        size_t sp_ = h.find_first_of(" \t");
+                        nm.push_back(h.substr(1, sp_ == string::npos ? string::npos : sp_ - 1)); sq.push_back(s);
+                    }
+                    my = rseq++;
+                }
+                ln.resize(nm.size());
+                for (size_t i = 0; i < nm.size(); ++i) {
+                    ++ts.nreads; ln[i].clear();
+                    if (bmlL) {
+                        bool l2 = std::decay_t<decltype(E_)>::isrz ? false : list;
+                        if (rz::bytemap().on) classify_bml(E_, Z, sq[i], bmlL, l2, ln[i], ts);
+                        else if (FB) { if constexpr (std::decay_t<decltype(E_)>::isrz) classify_fb(E_, Z, sq[i], bmlL, ln[i], ts); }
+                        else if (PIX) { if constexpr (std::decay_t<decltype(E_)>::isrz) classify_bml_2l(E_, Z, sq[i], bmlL, ln[i], ts); }
+                        else classify_bml_dna(E_, Z, sq[i], bmlL, l2, ln[i], ts);
+                    } else {
+                        if (rz::bytemap().on) sq[i] = rz::digest_mapped(sq[i]);
+                        classify_read(E_, Z, sq[i], mem, minlen, ln[i], ts);
+                    }
+                }
+                {
+                    std::unique_lock<std::mutex> lk(out_m); out_cv.wait(lk, [&] { return wseq == my; });
+                    for (size_t i = 0; i < nm.size(); ++i) fprintf(out, ">%s\n%s\n", nm[i].c_str(), ln[i].c_str());
+                    ++wseq;
+                }
+                out_cv.notify_all();
+                if (nm.empty()) break;
+            }
+            flush_counters();
+        };
+        double w0 = rz::now();
+        if (NJ == 1) work(0);
+        else { std::vector<std::thread> th; for (int t = 0; t < NJ; ++t) th.emplace_back(work, t); for (auto &x : th) x.join(); }
+        WALL = rz::now() - w0;
+        for (auto &ts : tst) add_stats(st, ts);
     };
-    if (srfile.empty()) { RzEng E_{Z}; loop(E_); }
+    if (srfile.empty()) {
+        RzEng E_{Z};
+        loop(E_);
+    }
     else {
         rz::rlbwt SB;
         { std::ifstream in(rixfile, std::ios::binary); u64 nn; in.read((char *)&nn, 8); SB.load(in); }
@@ -661,15 +925,18 @@ int main(int argc, char **argv) {
         }
     }
     fclose(out);
-    if (TAGX) fprintf(stderr, "tags s=%lu %s, LF steps %lu | ", TAGX->s, TAGLIST ? "list" : "lca", TAGX->lf_steps);
+    if (TAGX) fprintf(stderr, "tags s=%lu %s, LF steps %lu | ", TAGX->s, TAGLIST ? "list" : "lca", T_TAG_lf);
     if (bmlL) fprintf(stderr, "L=%lu %s unclassified=%lu docs/MEM=%.1f | ", bmlL, VFY ? "verified-list" : (list || TAGLIST) ? "list" : "lca", st.nuncl, st.nfeat ? (double)st.nlisted / st.nfeat : 0.0);
-    if (HYB) fprintf(stderr, "hybrid T=%lu A=%.2f: %lu MEMs by LCA | ", HYB_T, HYB_A, NHYB);
+    if (HYB) fprintf(stderr, "hybrid T=%lu A=%.2f: %lu MEMs by LCA | ", HYB_T, HYB_A, T_NHYB);
     if (VFY) fprintf(stderr, "occurrences checked %lu, verified %lu (%.1f%%), verification %.2f s | ", st.nocc, st.nver, st.nocc ? 100.0 * st.nver / st.nocc : 0.0, st.tver);
     fprintf(stderr, "reads=%lu %s=%lu avg_len=%.1f failed=%lu steps/read=%.1f | search %.2f s, %s %.2f s | %.1f us/read (search incl.), %.2f us/feature query\n",
             st.nreads, bmlL ? "MEMs" : mem ? "MEMs" : "phrases", st.nfeat, st.nfeat ? (double)st.totlen / st.nfeat : 0.0, st.nfail,
             st.nreads ? (double)st.steps / st.nreads : 0.0, st.tsearch, srfile.empty() ? "rz ends" : "sr ends", st.tquery,
             1e6 * (st.tsearch + st.tquery) / (st.nreads ? st.nreads : 1), 1e6 * st.tquery / (st.nfeat ? st.nfeat : 1));
-    if (TRIM_K) fprintf(stderr, "trim k=%lu w=%lu: %lu MEMs trimmed by %.1f bases on average, %lu MEMs dropped\n", TRIM_K, TRIM_W, TR_mems, TR_mems ? (double)TR_trim / TR_mems : 0.0, TR_skip);
-    if (KEBAB_K) fprintf(stderr, "kebab k=%lu: %.1f%% of read bases in pseudo-MEMs of length >= L\n", KEBAB_K, KB_total ? 100.0 * KB_kept / KB_total : 0.0);
+    fprintf(stderr, "threads=%d wall %.2f s, %.0f reads/s\n", NJ, WALL, WALL > 0 ? st.nreads / WALL : 0.0);
+    if (FT_t) fprintf(stderr, "lookups: table %.1f MB\n", FT_bytes / 1e6);
+    if (PIX) fprintf(stderr, "two-level k=%d s=%d: %.1f text steps, %.1f phrase steps, %.1f mappings per read\n", PIX->k, PIX->s, (double)T_PX_text / st.nreads, (double)T_PX_phr / st.nreads, (double)T_PX_map / st.nreads);
+    if (TRIM_K) fprintf(stderr, "trim k=%lu w=%lu: %lu MEMs trimmed by %.1f bases on average, %lu MEMs dropped\n", TRIM_K, TRIM_W, T_TR_mems, T_TR_mems ? (double)T_TR_trim / T_TR_mems : 0.0, T_TR_skip);
+    if (KEBAB_K) fprintf(stderr, "kebab k=%lu: %.1f%% of read bases in pseudo-MEMs of length >= L\n", KEBAB_K, T_KB_total ? 100.0 * T_KB_kept / T_KB_total : 0.0);
     return st.nfail ? 2 : 0;
 }

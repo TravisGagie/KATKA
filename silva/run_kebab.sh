@@ -6,7 +6,7 @@
 S=$(cd "$(dirname "$0")" && pwd); RZ=$(dirname "$S"); B=$RZ/rz-index/rz-classify; W=$S/work; D=$W/rz
 OUT=$D/kebab_speed.out; : > $OUT
 for r in V1_V2 V3_V4 V4_V4 V4_V5; do
-  awk 'int((NR-1)/4) % 5000 == 0' $W/reads/aquatic/$r/${r}_mate_1.fq > $D/kebab_reads.fq
+  $S/reads.sh $r 1 5000 > $D/kebab_reads.fq
   for c in "30 0" "30 20" "30 25" "15 0" "15 12"; do
     set -- $c
     echo -n "$r L=$1 k=$2: " >> $OUT

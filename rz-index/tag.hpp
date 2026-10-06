@@ -18,8 +18,8 @@ struct tag_index {
     sdsl::int_vector<> L;                                                              // tags of sampled runs
     sdsl::rmq_succinct_sct<> rmq;                                                      // over C
     const rlbwt *bwt = nullptr;                                                        // for LF (s > 1)
-    std::vector<char> mark; std::vector<u64> marked;
-    u64 lf_steps = 0;
+    static inline thread_local std::vector<char> mark; static inline thread_local std::vector<u64> marked;   // per thread (rz-classify -j)
+    static inline thread_local u64 lf_steps = 0;
 
     inline u64 run_of(u64 row) const { return RBr(row + 1) - 1; }
     inline u64 tag(u64 i) {
@@ -46,6 +46,23 @@ struct tag_index {
         rep(t);
         if (k > l) rec(l, k - 1, out, rep);
         if (k < r) rec(k + 1, r, out, rep);
+    }
+    // number of rows of [sp, ep) with each tag, as (tag, count) pairs sorted by tag
+    static inline thread_local std::vector<uint32_t> cnt;   // per thread (rz-classify -j)
+    void count(u64 sp, u64 ep, std::vector<std::pair<u64, u64>> &out) {
+        if (cnt.empty()) cnt.assign(1 << 16, 0);
+        out.clear();
+        u64 a = run_of(sp), b = run_of(ep - 1);
+        for (u64 i = a; i <= b; ++i) {
+            u64 st = std::max(sp, (u64)RBs(i + 1)), en = std::min(ep, i + 1 < rho ? (u64)RBs(i + 2) : n);
+            u64 t = tag(i);
+            if (t >= cnt.size()) cnt.resize(t + 1, 0);
+            if (cnt[t] == 0) marked.push_back(t);
+            cnt[t] += (uint32_t)(en - st);
+        }
+        for (u64 t : marked) { out.push_back({t, cnt[t]}); cnt[t] = 0; }
+        marked.clear();
+        std::sort(out.begin(), out.end());
     }
     u64 bytes() const {
         return sdsl::size_in_bytes(RB) + sdsl::size_in_bytes(RBr) + sdsl::size_in_bytes(RBs) + (s > 1 ? sdsl::size_in_bytes(SB) + sdsl::size_in_bytes(SBr) : 0)

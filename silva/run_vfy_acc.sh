@@ -5,7 +5,7 @@ R=$W/results/bml_vfy; mkdir -p $R
 for r in V1_V2 V3_V4 V4_V4 V4_V5; do
   d=$R/vlist_L$L/$r; [ -s $d/done ] && continue; mkdir -p $d
   for m in 1 2; do
-    awk 'int((NR-1)/4) % 50 == 0' $W/reads/aquatic/$r/${r}_mate_$m.fq > $d/reads_$m.fq
+    $S/reads.sh $r $m 50 > $d/reads_$m.fq
     $B -L $L -l -B $D/bac.map -C $D/bac.csa -S $D/bac.s0.sri -R $D/bac.rix -V $D/bac.vfy $D/bac.rz $d/reads_$m.fq $d/mate_$m.listings 2> $d/mate_$m.log || exit 1
     rm $d/reads_$m.fq
   done

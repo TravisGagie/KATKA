@@ -6,7 +6,7 @@
 #  2. speed: 2,000 reads per region (as before), every combination: rz on RLBWT / explicit / EF RLCSA,
 #     with and without the aux grid fixes; sr with s = 0, 4, 16 on the same backends, LCA and list;
 #     answers must agree across backends
-# Log: silva/run_bml_ud.log; results under work/results/bml_ud and work/rz/bml_speed.out
+# Log: ~/rz/silva/run_bml_ud.log; results under work/results/bml_ud and work/rz/bml_speed.out
 set -o pipefail
 S=$(cd "$(dirname "$0")" && pwd); RZ=$(dirname "$S"); B=$RZ/rz-index/rz-classify; W=$S/work; D=$W/rz
 LS=${LS-"15 20 30 40 50 75 100"}
@@ -19,7 +19,7 @@ acc_region() {   # $1 = region, $2 = L, $3 = mode
   [ -s $d/done ] && return 0
   mkdir -p $d
   for m in 1 2; do
-    awk 'int((NR-1)/4) % 50 == 0' $W/reads/aquatic/$r/${r}_mate_$m.fq > $d/reads_$m.fq
+    $S/reads.sh $r $m 50 > $d/reads_$m.fq
     if [ $M = lca ]; then $B -L $L -C $D/bac.csa -x $D/bac.aux $D/bac.rz $d/reads_$m.fq $d/mate_$m.listings 2> $d/mate_$m.log
     else $B -L $L -l -C $D/bac.csa -S $D/bac.s0.sri -R $D/bac.rix $D/bac.rz $d/reads_$m.fq $d/mate_$m.listings 2> $d/mate_$m.log; fi \
       || { echo "rz-classify failed: $r L=$L $M mate $m"; return 1; }
@@ -41,7 +41,7 @@ done; done
 step "speed: 2,000 reads per region, every combination"
 SP=$D/bml_speed.out; [ -s $SP ] || : > $SP
 for r in V1_V2 V3_V4 V4_V4 V4_V5; do
-  awk 'int((NR-1)/4) % 5000 == 0' $W/reads/aquatic/$r/${r}_mate_1.fq > $D/bml_reads.fq
+  $S/reads.sh $r 1 5000 > $D/bml_reads.fq
   for L in $LS; do
     grep -q "^$r L=$L done" $SP && continue
     O=$D/bml_out; mkdir -p $O; rm -f $O/*

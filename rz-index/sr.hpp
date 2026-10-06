@@ -80,7 +80,7 @@ struct srindex_t {
     std::vector<u64> trow, tpos;    // terminator rows and their SA values (sorted by row)
     sparse_bv dstart;               // dataset starts in D
     NAV *mv = nullptr;              // backward-search backend, not owned
-    u64 lf_steps = 0, invalid_phis = 0;
+    static inline thread_local u64 lf_steps = 0, invalid_phis = 0;   // per thread (rz-classify -j)
 
     srindex_t() {}
     srindex_t(const srindex_t &) = delete;
@@ -109,8 +109,8 @@ struct srindex_t {
 
     // ---- locate over a range, reporting min and max -------------------------------------------
     struct run { u64 k, lo, hi; };               // rows lo..hi (offsets) of move row k; empty if hi < lo
-    u64 value = 0; bool valid = false; u64 mn = 0, mx = 0;
-    std::vector<u64> *collect = nullptr;   // if set, every occurrence (in D coordinates) is appended
+    static inline thread_local u64 value = 0; static inline thread_local bool valid = false; static inline thread_local u64 mn = 0, mx = 0;
+    static inline thread_local std::vector<u64> *collect = nullptr;   // if set, every occurrence (in D coordinates) is appended
     inline void report(u64 v) { if (v < mn) mn = v; if (v > mx) mx = v; if (collect) collect->push_back(v); }
 
     // runs covering the rows [(k, o), (k, o) + cnt)

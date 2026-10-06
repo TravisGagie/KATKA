@@ -6,7 +6,7 @@
 S=$(cd "$(dirname "$0")" && pwd); RZ=$(dirname "$S"); B=$RZ/rz-index/rz-classify; W=$S/work; D=$W/rz; O=$W/results/trim
 mkdir -p $O
 for r in V1_V2 V4_V4; do
-  for m in 1 2; do awk 'int((NR-1)/4) % 500 == 0' $W/reads/aquatic/$r/${r}_mate_$m.fq > $O/${r}_$m.fq; done
+  for m in 1 2; do $S/reads.sh $r $m 500 > $O/${r}_$m.fq; done
   for v in base trim fix1 fix2 fix4 fix6; do
     case $v in base) E="";; trim) E="RZ_TRIM=4,11";; fix*) E="RZ_TRIMFIX=${v#fix}";; esac
     for m in 1 2; do env $E $B -L 30 -l -C $D/bac.csa -T $D/bac.s1.tag $D/bac.rz $O/${r}_$m.fq $O/${r}_${v}_$m.listings 2> $O/${r}_${v}_$m.log; done

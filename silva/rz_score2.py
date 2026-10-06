@@ -25,7 +25,8 @@ p.add_argument("--doc-id-to-traversal", required=True); p.add_argument("--silva-
 p.add_argument("--readset-truthset", required=True); p.add_argument("--trav-to-length", required=True)
 p.add_argument("--output", required=True); p.add_argument("--exp-src", required=True)
 p.add_argument("--threads", type=int, default=os.cpu_count())
-p.add_argument("--mode", choices=["lca", "list"], default="lca")
+p.add_argument("--mode", choices=["lca", "list", "freq", "norm"], default="lca")
+p.add_argument("--nseq", default=None, help="sequences per document (one per line), for --mode norm")
 a = p.parse_args()
 spec = importlib.util.spec_from_file_location("csr", os.path.join(a.exp_src, "classify_silva_readset.py"))
 csr = importlib.util.module_from_spec(spec); spec.loader.exec_module(csr)
@@ -35,21 +36,35 @@ rs = csr.DocProfReadSet(a.mate1_listings, a.mate2_listings, a.doc_id_to_traversa
 def parse(listing):
     t = listing.split(); out = []
     for i in range(0, len(t), 2):
-        s, e = t[i][1:-1].split(","); d = [int(x) for x in t[i + 1][1:-1].split(",")]
-        out.append((int(e) - int(s) + 1, d, t[i + 1][0] == "<"))   # <l,r>: an LCA answer in a hybrid listing
+        s, e = t[i][1:-1].split(",")
+        d, c = [], []
+        for x in t[i + 1][1:-1].split(","):
+            if ":" in x: a, b = x.split(":"); d.append(int(a)); c.append(int(b))
+            else: d.append(int(x)); c.append(1)
+        out.append((int(e) - int(s) + 1, d, t[i + 1][0] == "<", c))   # <l,r>: an LCA answer in a hybrid listing
     return out
+NSEQ = [int(l) for l in open(a.nseq)] if a.nseq else None
 
 G = {}
 def work(rng):
     lo, hi = rng; keys = G["keys"]; d2c = G["d2c"]; labels = G["labels"]; level = G["level"]
-    tp = uncl = uncl_theirs = amb = strict = 0; listmode = G["mode"] == "list"
+    tp = uncl = uncl_theirs = amb = strict = 0; listmode = G["mode"] in ("list", "freq", "norm")
     for r in rs.read_list[lo:hi]:
         correct = r.correct_taxa.get_certain_level(level)
         n = labels.get(correct, 0)
         if n != 1: tp += 1; amb += 1; strict += 1; continue      # truth missing/ambiguous at this level: correct, as in their code
         acc = {}
         for listing in (r.mate1_listings, r.mate2_listings):
-            for L, d, rng in parse(listing):
+            for L, d, rng, cnt in parse(listing):
+                if listmode and not rng and G["mode"] in ("freq", "norm"):
+                    # credit proportional to the occurrences in each genus (freq), or to the fraction of the
+                    # genus's sequences (both strands) containing the match (norm)
+                    f = [c if G["mode"] == "freq" else c / (2 * NSEQ[doc]) for doc, c in zip(d, cnt)]
+                    tot = sum(f)
+                    for doc, x in zip(d, f):
+                        t = d2c.get(doc)
+                        if t and t in keys: acc[t] = acc.get(t, 0) + L * x / tot
+                    continue
                 docs = d if listmode and not rng else range(d[0], d[-1] + 1)
                 w = L / len(docs)
                 for doc in docs:

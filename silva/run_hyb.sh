@@ -3,7 +3,7 @@
 # answered by its LCA (rz-index grids), the others by listing (sr-index).  Accuracy on the same 200 K pairs per
 # region as run_bml.sh (sr s = 0, explicit RLCSA, with aux); speed on the same 2,000 reads, sr with
 # s = 0, 4, 16 on RLBWT / explicit / EF RLCSA, with and without the aux grid fixes.
-# Log: silva/run_hyb.log; results under work/results/bml_hyb and work/rzdg/hyb_speed.out
+# Log: ~/rz/silva/run_hyb.log; results under work/results/bml_hyb and work/rzdg/hyb_speed.out
 set -o pipefail
 S=$(cd "$(dirname "$0")" && pwd); RZ=$(dirname "$S"); B=$RZ/rz-index/rz-classify; W=$S/work; D=$W/rzdg
 LS=${LS-"15 20 30"}; TS=${TS-"100 300 1000"}
@@ -16,7 +16,7 @@ acc_region() {   # $1 = region, $2 = L, $3 = T
   [ -s $d/done ] && return 0
   mkdir -p $d
   for m in 1 2; do
-    awk 'int((NR-1)/4) % 50 == 0' $W/reads/aquatic/$r/${r}_mate_$m.fq > $d/reads_$m.fq
+    $S/reads.sh $r $m 50 > $d/reads_$m.fq
     $B -L $L -l -H $T -B $D/bac.map -C $D/bac.csa -x $D/bac.aux -S $D/bac.s0.sri -R $D/bac.rix $D/bac.rz $d/reads_$m.fq $d/mate_$m.listings 2> $d/mate_$m.log \
       || { echo "rz-classify failed: $r L=$L T=$T mate $m"; return 1; }
     rm $d/reads_$m.fq
@@ -37,7 +37,7 @@ done; done
 step "speed: 2,000 reads per region"
 SP=$D/hyb_speed.out; [ -s $SP ] || : > $SP
 for r in V1_V2 V3_V4 V4_V4 V4_V5; do
-  awk 'int((NR-1)/4) % 5000 == 0' $W/reads/aquatic/$r/${r}_mate_1.fq > $D/hyb_reads.fq
+  $S/reads.sh $r 1 5000 > $D/hyb_reads.fq
   for L in $LS; do for T in $TS; do
     grep -q "^$r L=$L T=$T done" $SP && continue
     O=$D/hyb_out; mkdir -p $O; rm -f $O/*

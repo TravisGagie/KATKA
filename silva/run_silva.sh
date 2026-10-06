@@ -1,8 +1,8 @@
 #!/bin/bash
 # Reproduces the Cliffy paper's 16S experiment (Ahmed, Boucher, Langmead, Genome Res 2025) on this
-# desktop, using their scripts (./cliffy-experiments), MicrobeMixer (./MicrobeMixer) and
-# Cliffy (silva/cliffy/build/cliffy) with the settings in their Snakemake rules.
-# Resumable: every step is skipped if its output exists.  Log: silva/run_silva.log
+# desktop, using their scripts (~/rz/cliffy-experiments), MicrobeMixer (~/rz/MicrobeMixer) and
+# Cliffy (~/rz/silva/cliffy/build/cliffy) with the settings in their Snakemake rules.
+# Resumable: every step is skipped if its output exists.  Log: ~/rz/silva/run_silva.log
 #
 # Environment (defaults): BIOMES="aquatic"  REGIONS="V1_V2 V3_V4 V4_V4 V4_V5"  NREADS=10000000
 #                         INDEXES=""  TMPSIZE=10GB
@@ -29,7 +29,7 @@ TAXTXT=$S/exp1_data/tax_slv_ssu_138.1.txt; TAXTRE=$S/exp1_data/tax_slv_ssu_138.1
 step() { echo "=== $(date '+%F %T') $*"; }
 fail() { echo "FAILED: $*"; exit 1; }
 T() { /usr/bin/time --format='user= %U system= %S elapsed= %e CPU= %P MemMax= %M' "$@"; }
-for t in seqtk art_illumina /usr/bin/time $([ -n "$INDEXES" ] && echo $CL); do command -v $t >/dev/null || fail "missing $t"; done
+for t in seqtk art_illumina /usr/bin/time $CL; do command -v $t >/dev/null || fail "missing $t"; done
 python3 -c "import regex, requests, aiohttp, pandas, multiprocess" || fail "missing Python modules"
 
 step "reference: one file per genus, in SILVA tree order"
