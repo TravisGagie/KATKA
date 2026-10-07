@@ -5,6 +5,13 @@
 S=$(cd "$(dirname "$0")" && pwd); LOG=$S/build_cliffy.log
 [ -d $S/cliffy ] || { echo "FAILED: no silva/cliffy (git clone https://github.com/oma219/cliffy.git silva/cliffy)"; exit 1; }
 for t in g++ cmake make; do command -v $t > /dev/null || { echo "FAILED: missing $t"; exit 1; }; done
+# Cliffy needs CMake 3.13 or later; a newer one can be installed without root: python3 -m pip install --user cmake
+cv=$(cmake --version | head -1 | grep -o "[0-9][0-9.]*" | head -1)
+if [ "$(printf '%s\n3.13\n' "$cv" | sort -V | head -1)" != 3.13 ]; then
+  echo "FAILED: Cliffy needs CMake 3.13 or later, and this is CMake $cv."
+  echo "  Install a newer one without root:  python3 -m pip install --user cmake  (then put ~/.local/bin first in PATH)"
+  exit 1
+fi
 export CMAKE_POLICY_VERSION_MINIMUM=3.5      # its dependencies ask for CMake versions older than 3.5
 F="-include cstdint"                          # headers that forget <cstdint>
 # sdsl-lite template bodies that no longer compile under GCC 15 but are never used (only if g++ knows the flag)
