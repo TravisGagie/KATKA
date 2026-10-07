@@ -10,6 +10,8 @@
 #pragma once
 #include "rz_index.hpp"
 #include <sdsl/rmq_support.hpp>
+#include "gtag.hpp"
+#include <memory>
 
 namespace rz {
 
@@ -19,6 +21,7 @@ struct tag_index {
     sdsl::bit_vector SB; sdsl::rank_support_v5<> SBr;                                  // sampled runs (s > 1)
     sdsl::int_vector<> L;                                                              // tags of sampled runs
     sdsl::rmq_succinct_sct<> rmq; bool has_rmq = false;                                // over C (listing only)
+    std::shared_ptr<gram_tags> gram;                                                   // optional: genera of the runs from a grammar (gtag.hpp; counting only)
     const rlbwt *bwt = nullptr;                                                        // for LF (s > 1)
     static inline thread_local std::vector<char> mark; static inline thread_local std::vector<u64> marked;   // per thread (rz-classify -j)
     static inline thread_local u64 lf_steps = 0;
@@ -55,6 +58,15 @@ struct tag_index {
         if (cnt.empty()) cnt.assign(1 << 16, 0);
         out.clear();
         u64 a = run_of(sp), b = run_of(ep - 1);
+        if (gram) {   // genera from the grammar, decoded sequentially from run a
+            u64 i = a, en = RBs(a + 1);
+            gram->decode(a, b - a + 1, [&](uint32_t t) {
+                u64 st = std::max(sp, en); en = i + 1 < rho ? (u64)RBs(i + 2) : n; ++i;
+                if (t >= cnt.size()) cnt.resize(t + 1, 0);
+                if (cnt[t] == 0) marked.push_back(t);
+                cnt[t] += (uint32_t)(std::min(ep, en) - st);
+            });
+        } else
         for (u64 i = a; i <= b; ++i) {
             u64 st = std::max(sp, (u64)RBs(i + 1)), en = std::min(ep, i + 1 < rho ? (u64)RBs(i + 2) : n);
             u64 t = tag(i);
@@ -68,18 +80,31 @@ struct tag_index {
     }
     u64 bytes() const {
         return sdsl::size_in_bytes(RB) + sdsl::size_in_bytes(RBr) + sdsl::size_in_bytes(RBs) + (s > 1 ? sdsl::size_in_bytes(SB) + sdsl::size_in_bytes(SBr) : 0)
-               + sdsl::size_in_bytes(L) + (has_rmq ? sdsl::size_in_bytes(rmq) : 0);
+               + sdsl::size_in_bytes(L) + (has_rmq ? sdsl::size_in_bytes(rmq) : 0) + (gram ? gram->bytes() : 0);
     }
     void save(const std::string &f) const {
         std::ofstream o(f, std::ios::binary); o.write("RZTAG002", 8); o.write((char *)&n, 8); o.write((char *)&rho, 8); o.write((char *)&s, 8);
         RB.serialize(o); RBr.serialize(o); RBs.serialize(o); if (s > 1) { SB.serialize(o); SBr.serialize(o); } L.serialize(o);
         if (has_rmq) { std::ofstream r(f + ".rmq", std::ios::binary); r.write("RZRMQ001", 8); rmq.serialize(r); }
     }
+    // with the genera of the runs from a grammar instead of L (counting only; s must be 1)
+    void save_gram(const std::string &f) const {
+        std::ofstream o(f, std::ios::binary); o.write("RZGTAG01", 8); o.write((char *)&n, 8); o.write((char *)&rho, 8); o.write((char *)&s, 8);
+        RB.serialize(o); RBr.serialize(o); RBs.serialize(o); gram->serialize(o);
+    }
     // need_rmq: load the RMQ too (for listing); fails if it was not built
     bool load(const std::string &f, bool need_rmq = true) {
         std::ifstream i(f, std::ios::binary); char mg[8];
         if (!i.read(mg, 8)) return false;
-        std::string m(mg, 8); if (m != "RZTAG001" && m != "RZTAG002") return false;
+        std::string m(mg, 8);
+        if (m == "RZGTAG01") {
+            if (need_rmq) { fprintf(stderr, "%s is a grammar-compressed tag array, which supports counting only (RZ_COUNTS=1)\n", f.c_str()); return false; }
+            i.read((char *)&n, 8); i.read((char *)&rho, 8); i.read((char *)&s, 8);
+            RB.load(i); RBr.load(i, &RB); RBs.load(i, &RB);
+            gram = std::make_shared<gram_tags>(); gram->load(i);
+            return (bool)i && gram->rho == rho;
+        }
+        if (m != "RZTAG001" && m != "RZTAG002") return false;
         i.read((char *)&n, 8); i.read((char *)&rho, 8); i.read((char *)&s, 8);
         RB.load(i); RBr.load(i, &RB); RBs.load(i, &RB); if (s > 1) { SB.load(i); SBr.load(i, &SB); } L.load(i);
         if (!i) return false;

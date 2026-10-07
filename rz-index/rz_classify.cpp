@@ -112,7 +112,10 @@ static bool TAGLIST = false;
 static thread_local std::vector<u64> TL;   // -V: verify digested MEMs against the DNA
 // answer a MEM from the tag array: its genera (-l), with occurrence counts (RZ_COUNTS), or the smallest and largest
 static thread_local std::vector<std::pair<u64, u64>> TC;
+// RZ_IVLOG=file: log the BWT interval [sp, ep) of every MEM answered from the tag array (two u64 each), for benchmarks
+static FILE *IVLOG = nullptr; static std::mutex IVLOG_M;
 static void tag_answer(u64 sp, u64 ep, string &out, u64 &nlisted) {
+    if (IVLOG) { std::lock_guard<std::mutex> g(IVLOG_M); u64 v[2] = {sp, ep}; fwrite(v, 8, 2, IVLOG); }
     char b[48];
     if (TAGLIST && COUNTS) {
         TAGX->count(sp, ep, TC);
@@ -731,6 +734,7 @@ int main(int argc, char **argv) {
     if (FB && (!bmlL || tagfile.empty() || rz::bytemap().on)) { fprintf(stderr, "-W needs -L and -T, without -B\n"); return 1; }
     if (const char *kb = getenv("RZ_KEBAB")) KEBAB_K = std::stoull(kb);
     COUNTS = getenv("RZ_COUNTS") != nullptr;
+    if (const char *lf = getenv("RZ_IVLOG")) { IVLOG = fopen(lf, "wb"); if (!IVLOG) { fprintf(stderr, "cannot write %s\n", lf); return 1; } atexit([] { fclose(IVLOG); }); }
     if (const char *tf = getenv("RZ_TRIMFIX")) { TRIM_FIX = std::stoull(tf); TRIM_FIXON = true; }
     if (const char *tr = getenv("RZ_TRIM")) { TRIM_K = std::stoull(tr); const char *c = strchr(tr, ','); TRIM_W = c ? std::stoull(c + 1) : 11; }
     // the rz-index's grids are needed only for its own LCA queries (no -T or -S, or -H/-A, or -x)

@@ -20,6 +20,7 @@ def sizes(ds):
     pix = sz("bac.k12s4.pix") + sz("bac.k12s4.pix.B") if os.path.exists(f"{D}/bac.k12s4.pix") else 0
     def space(kind, s, v, tab):
         if kind == "sr": x = sz(f"bac.s{s}.sri") + (rlbwt if v != "rl" else 0)
+        elif kind == "gtag": x = sz(f"bac.s{s}.gtag")   # run starts + grammar (no RMQ: counting only)
         else: x = sz(f"bac.s{s}.tag") - (RMQ.get(f"{ds}/bac.s{s}.tag", 0) if COUNTS else 0) + (rlbwt if s != "1" and v != "rl" else 0)
         if kind == "2l": x += pix
         return back[v] + x + tab
@@ -33,8 +34,11 @@ def acc(ds, L, key):
             if f[2] == "genus": d = dict(x.split("=") for x in f[4:]); d["acc"] = f[3]; v.append(float(d[key]))
     return sum(v) / len(v)
 t = collections.defaultdict(list); tab = {}; bad = 0
-for l in open(f"{W}/pareto_speed_counts.out" if COUNTS else f"{W}/pareto_speed.out"):
-    m = re.match(r"(\S+) (\S+) L=(\d+) (tag|sr|2l) s=(\d+) (\S+) F=(\d+): ([\d.]+) us/read(?: table ([\d.]+) MB)?", l)
+GT = f"{W}/pareto_speed_gtag.out"   # grammar-compressed tag arrays (run_gtag.sh), counting only
+lines = list(open(f"{W}/pareto_speed_counts.out" if COUNTS else f"{W}/pareto_speed.out"))
+if COUNTS and os.path.exists(GT): lines += [l for l in open(GT) if " gtag " in l]
+for l in lines:
+    m = re.match(r"(\S+) (\S+) L=(\d+) (tag|sr|2l|gtag) s=(\d+) (\S+) F=(\d+): ([\d.]+) us/read(?: table ([\d.]+) MB)?", l)
     if not m: continue
     if "DIFFER" in l: bad += 1
     k = (m.group(1), int(m.group(3)), m.group(4), m.group(5), m.group(6), int(m.group(7)))

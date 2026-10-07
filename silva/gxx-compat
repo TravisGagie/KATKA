@@ -1,4 +1,4 @@
 #!/bin/sh
-# g++ with two fixes for old code under GCC 15: headers that forget <cstdint>, and
-# sdsl-lite template bodies that no longer compile but are never used.
-exec g++ -include cstdint -Wno-template-body "$@"
+# g++ with fixes for old code under recent GCC (chosen by build_cliffy.sh, which checks that g++ supports them):
+# headers that forget <cstdint>, and sdsl-lite template bodies that no longer compile but are never used.
+exec g++ ${GXX_COMPAT_FLAGS--include cstdint} "$@"

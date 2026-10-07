@@ -82,6 +82,9 @@ and its Pareto set end up in `silva/work/pareto_counts.txt`.
     silva/run_cliffy.sh                   # builds Cliffy's indexes if they are missing, then runs Cliffy
     silva/run_katka.sh                    # then KATKA, with the same number of threads
 
+Before the full build, `./demo_mini.sh` (after `./demo_quick.sh`) checks that Cliffy builds and runs: it builds Cliffy
+and its indexes for every 30th genus of SILVA, classifies the matching quick-demo reads and scores them, in minutes.
+
 Cliffy's index construction writes over a terabyte of temporary files for the undigested index (its paper's
 Table 1). Set `TMPDIR_CLIFFY` to a directory on a large disk.
 
@@ -115,6 +118,14 @@ with P. Kraken 2 classifies the two mates together and is scored with Cliffy's o
 mate a genus, and is scored as KATKA is, with a pair whose mates disagree counted as wrong, broken at random, or
 counted as correct. `TAGGER_L=...` changes Tagger's minimum match length (default 25) and reuses its index. The
 results go to `silva/work/compare/kraken2-<host>/` and `silva/work/compare/tagger-<host>/`.
+
+## Grammar-compressed tag arrays (optional)
+
+The run-length tag array's runs can be grammar-compressed further (`rz-index/gtag.hpp`): the genera of the runs are
+compressed with RePair (Navarro's `irepair`, from https://gitlab.com/manzai/bigrepair), and `rz-gtagbuild` turns its output into a
+`.gtag` file that `rz-classify -T` uses like a tag array, for counting only (`RZ_COUNTS=1`). `silva/run_gtag.sh`
+builds `work/rz/bac.s1.gtag` (with `tools/grammar/tokwrite`), checks that the answers are identical, and times it;
+`pareto_ft.py --counts` includes it. `tools/grammar/` has the analysis programs (LZ77 and grammar sizes).
 
 ## Classifying your own reads
 
