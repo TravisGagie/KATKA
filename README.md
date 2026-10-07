@@ -3,21 +3,18 @@
 KATKA classifies DNA reads taxonomically with long maximal exact matches (MEMs) and compressed indexes.
 This repository has the code and the experiments for
 
-> Travis Gagie and Gonzalo Navarro. *Taxonomic Classification with Tag Arrays.* 2026.
+> Travis Gagie and Gonzalo Navarro. *Taxonomic Classification with Complete Tag Arrays.* 2026.
 
 By default, KATKA works in three steps:
 
 * It finds the MEMs of at least *L* = 30 bases between a read and the reference with **Boyer–Moore–Li**, on a
   run-length compressed suffix array (RLCSA) with a lookup table of all 10-mers.
-* It lists the genera containing each MEM with a **run-length compressed tag array** and Muthukrishnan/Sadakane
-  document listing, counting the occurrences in each genus.
+* It counts the occurrences of each MEM in each genus with a **run-length compressed tag array** (which also
+  supports listing the genera with Muthukrishnan/Sadakane document listing).
 * It gives each genus **credit in proportion to its occurrences**, summed over the MEMs of both mates.
 
-Two options trade accuracy or memory for speed:
-
-* **Minimizer digests:** matching over strand-symmetric digests is about three times smaller and faster, but
-  slightly less accurate.
-* **Two-level parse index:** with closed syncmers, slightly faster but uses more memory.
+Optionally, KATKA can match over strand-symmetric **minimizer digests**, which makes the index about three times
+smaller and classification faster, but slightly less accurate.
 
 The name comes from two earlier projects, KATKA (SPIRE 2022) and its MEM-based successor (SEA 2024). Almost
 everything has changed since then.
@@ -107,6 +104,18 @@ By default, Cliffy's `full_text` and `minimizers` indexes are compared with KATK
 without digests. Change them with `CLIFFY=...` and `OURS=...`. The results go to
 `silva/work/compare/cliffy-<host>/` and `silva/work/compare/katka-<host>/`.
 
+## Comparing with Kraken 2 and Tagger
+
+    silva/run_kraken2.sh          # Kraken 2 (needs kraken2 and kraken2-build in the PATH)
+    silva/run_tagger.sh           # Tagger (clones and builds it; needs cmake)
+    silva/run_scale.sh            # KATKA, Kraken 2 and Tagger with 1, 6 and 12 threads on 200,000 pairs per region
+
+Each builds its tool's index if it is missing and runs it on the same reads as `run_katka.sh`, with one thread and
+with P. Kraken 2 classifies the two mates together and is scored with Cliffy's own script; Tagger assigns each
+mate a genus, and is scored as KATKA is, with a pair whose mates disagree counted as wrong, broken at random, or
+counted as correct. `TAGGER_L=...` changes Tagger's minimum match length (default 25) and reuses its index. The
+results go to `silva/work/compare/kraken2-<host>/` and `silva/work/compare/tagger-<host>/`.
+
 ## Classifying your own reads
 
     cd rz-index
@@ -116,7 +125,8 @@ For every MEM of at least 30 bases, this lists the genera containing it and its 
 using 8 threads. The output is the same for any number of threads.
 
 The output has one line per read in Cliffy's listing format: `[start,end] {doc:count,doc:count,...}` for each
-MEM. Without `RZ_COUNTS=1`, it lists just the documents.
+MEM. Without `RZ_COUNTS=1`, it lists just the documents; that needs the tag array's RMQ (`bac.s1.tag.rmq`),
+which `build_katka.sh` builds only with `LIST=1`, since counting does not use it.
 
 * `silva/build_katka.sh` shows how to build the index from FASTA files.
 * `silva/rz_score2.py` shows how to turn listings into classifications.
@@ -129,7 +139,7 @@ MEM. Without `RZ_COUNTS=1`, it lists just the documents.
     setup_deps.sh       fetches the dependencies (pinned commits) and SILVA 138.1
     runrz.sh            builds the text, BWT, parses, rz-index, r-index and sr-indexes from a list of FASTA files
     rz-index/           C++17 sources: index construction (rz-prep, rz-lz77, rz-build, rz-aux, sr-build,
-                        rz-csabuild, rz-tagbuild, rz-parsebuild, rz-vfybuild) and the classifier (rz-classify)
+                        rz-csabuild, rz-tagbuild, rz-vfybuild) and the classifier (rz-classify)
     silva/build_katka.sh, get_reads.sh, reads.sh   reference, indexes and reads for the experiments
     silva/run_*.sh      the experiments (each says at the top what it measures and where its results go)
     silva/rz_score2.py, pareto_ft.py   scoring and the time/space/accuracy table

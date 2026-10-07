@@ -23,9 +23,6 @@ csa-F10     -C $D/bac.csa -F 10
 csa-F12     -C $D/bac.csa -F 12
 csaef       -C $D/bac.csaef
 csaef-F10   -C $D/bac.csaef -F 10
-2l-k12-F10  -C $D/bac.csa -P $D/bac.k12s4.pix -F 10
-2l-k12-F12  -C $D/bac.csa -P $D/bac.k12s4.pix -F 12
-2l-k16-F12  -C $D/bac.csa -P $D/bac.k16s5.pix -F 12
 LIST
   done
 done

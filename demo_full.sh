@@ -6,7 +6,6 @@
 #  3. the experiments, in this order (each script says what it measures and where its results go):
 #       run_bml.sh, run_bml_ud.sh      MEM threshold L, LCA vs listing, equal credit (digested, undigested)
 #       run_freq.sh                    equal, proportional and normalized credit (L = 15, 30)
-#       run_2l.sh                      two-level parse indexes (also builds them)
 #       run_counts_all.sh              proportional credit for every L, times of every configuration with
 #                                      occurrence counts, and the Pareto set (work/pareto_counts.txt)
 #       run_ftab.sh, run_fb.sh, run_tag.sh   lookup tables, forward-backward, tag-array sampling
@@ -16,7 +15,7 @@
 # Resumable: rerun it after an interruption.  STEPS="..." runs only some of the experiment scripts.
 set -e
 ROOT=$(cd "$(dirname "$0")" && pwd); S=$ROOT/silva; W=$S/work
-STEPS=${STEPS:-"run_bml.sh run_bml_ud.sh run_freq.sh run_2l.sh run_counts_all.sh run_ftab.sh run_fb.sh run_tag.sh run_kebab.sh run_trim.sh run_hyb.sh run_vfy_acc.sh run_threads.sh run_katka.sh"}
+STEPS=${STEPS:-"run_bml.sh run_bml_ud.sh run_freq.sh run_counts_all.sh run_ftab.sh run_fb.sh run_tag.sh run_kebab.sh run_trim.sh run_hyb.sh run_vfy_acc.sh run_threads.sh run_katka.sh"}
 cd $ROOT
 ./setup_deps.sh
 make -C rz-index -j4 DEPS=$ROOT/deps

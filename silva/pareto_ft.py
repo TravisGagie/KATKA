@@ -1,20 +1,26 @@
 #!/usr/bin/env python3
 # Time/space/accuracy Pareto set from run_pareto_ft.sh (work/pareto_speed.out), with lookup tables.
-# Space = structures loaded: backend (RLBWT or RLCSA) + tags or sr samples (+ the RLBWT when an RLCSA is used
+# Space = structures loaded: backend (RLBWT or RLCSA) + tags (without the RMQ, which counting does not load) or sr samples (+ the RLBWT when an RLCSA is used
 # with sr samples, or with sampled tags) + the lookup table (+ the parse index for two-level BML).
 # Accuracy: work/results/bml{,_ud}/list_L*/<region>/scores.csv (unchanged by the tables).
-import re, os, sys, collections
+import re, os, sys, collections, subprocess
 COUNTS = "--counts" in sys.argv     # proportional credit: times from pareto_speed_counts.out, accuracy from results/freq/*/freq.csv
 S = os.path.dirname(os.path.abspath(__file__)); W = S + "/work"; R = ["V1_V2", "V3_V4", "V4_V4", "V4_V5"]
 RES = {"rzdg": "bml", "rz": "bml_ud"}
+def tag_rmq(ds):   # RMQ bytes of each tag array (rz-taginfo; or a saved copy of its output in $TAGINFO)
+    S2 = os.path.dirname(S); files = [f"{W}/{ds}/{f}" for f in os.listdir(f"{W}/{ds}") if re.fullmatch(r"bac\.s\d+\.tag", f)]
+    out = open(os.environ["TAGINFO"]).read() if "TAGINFO" in os.environ else subprocess.run([S2 + "/rz-index/rz-taginfo"] + files, capture_output=True, text=True, check=True).stdout
+    return {l.split()[0].split("/")[-2] + "/" + os.path.basename(l.split()[0]): int(l.split()[4]) / 1e9 for l in out.splitlines()[1:] if l.strip()}
+RMQ = {}
 def sizes(ds):
+    RMQ.update(tag_rmq(ds))
     D = f"{W}/{ds}"; sz = lambda f: os.path.getsize(f"{D}/{f}") / 1e9
     rlbwt = int(re.search(r"rlbwt=(\d+)", open(f"{D}/rz-build.out").read()).group(1)) / 1e9
     back = {"rl": rlbwt, "csa": sz("bac.csa"), "csaef": sz("bac.csaef")}
     pix = sz("bac.k12s4.pix") + sz("bac.k12s4.pix.B") if os.path.exists(f"{D}/bac.k12s4.pix") else 0
     def space(kind, s, v, tab):
         if kind == "sr": x = sz(f"bac.s{s}.sri") + (rlbwt if v != "rl" else 0)
-        else: x = sz(f"bac.s{s}.tag") + (rlbwt if s != "1" and v != "rl" else 0)
+        else: x = sz(f"bac.s{s}.tag") - (RMQ.get(f"{ds}/bac.s{s}.tag", 0) if COUNTS else 0) + (rlbwt if s != "1" and v != "rl" else 0)
         if kind == "2l": x += pix
         return back[v] + x + tab
     return space

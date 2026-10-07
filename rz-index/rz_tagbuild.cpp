@@ -1,5 +1,6 @@
 // Build the tag index (tag.hpp) of a document collection S built by rz-prep (one document per genus).
-// usage: rz-tagbuild <prefix> <s> <out.tag>
+// usage: rz-tagbuild <prefix> <s> <out.tag> [-n]
+//   writes out.tag and, unless -n, out.tag.rmq, the RMQ that document listing needs (counting does not).
 //   reads prefix.S, prefix.tbl and prefix.rz (its RLBWT, for LF); s = 1: every run's tag is stored.
 //   Stage 1 (suffix sorting, runs and their tags) is cached in prefix.tagruns.
 #include "tag.hpp"
@@ -11,7 +12,8 @@
 using namespace rz;
 static double secs(std::chrono::steady_clock::time_point t) { return std::chrono::duration<double>(std::chrono::steady_clock::now() - t).count(); }
 int main(int argc, char **argv) {
-    if (argc != 4) { fprintf(stderr, "usage: rz-tagbuild prefix s out.tag\n"); return 1; }
+    bool norm = argc == 5 && std::string(argv[4]) == "-n";   // -n: no RMQ (counting only; listing needs it)
+    if (argc != 4 && !norm) { fprintf(stderr, "usage: rz-tagbuild prefix s out.tag [-n]\n  writes out.tag and, unless -n, out.tag.rmq (for listing)\n"); return 1; }
     std::string p = argv[1]; u64 s = std::stoull(argv[2]); auto T0 = std::chrono::steady_clock::now();
     std::vector<uint32_t> rs; std::vector<uint16_t> tg; u64 n = 0;
     {   // stage 1
@@ -41,10 +43,10 @@ int main(int argc, char **argv) {
     tag_index X; X.n = n; X.rho = rho; X.s = s;
     { sdsl::bit_vector b(n, 0); for (u64 r : rs) b[r] = 1; X.RB = sdsl::sd_vector<>(b); }
     sdsl::util::init_support(X.RBr, &X.RB); sdsl::util::init_support(X.RBs, &X.RB);
-    {   // RMQ over C (previous run with the same tag, +1; 0 if none)
+    if (!norm) {   // RMQ over C (previous run with the same tag, +1; 0 if none)
         sdsl::int_vector<> C(rho, 0, sdsl::bits::hi(rho + 1) + 1); std::vector<uint32_t> last(1 << 16, 0);
         for (u64 i = 0; i < rho; ++i) { C[i] = last[tg[i]]; last[tg[i]] = i + 1; }
-        X.rmq = sdsl::rmq_succinct_sct<>(&C);
+        X.rmq = sdsl::rmq_succinct_sct<>(&C); X.has_rmq = true;
     }
     u64 nroot = 0, ncyc = 0, nsamp = rho;
     if (s == 1) {
@@ -95,6 +97,6 @@ int main(int argc, char **argv) {
     fprintf(stderr, "s=%lu: runs %lu, roots %lu, cycles %lu, sampled %lu (%.1f%%) | bytes %lu (%.2f bits/run): starts %lu, sampled bits %lu, tags %lu, RMQ %lu | %.0f s\n",
             s, rho, nroot, ncyc, nsamp, 100.0 * nsamp / rho, X.bytes(), 8.0 * X.bytes() / rho,
             sdsl::size_in_bytes(X.RB) + sdsl::size_in_bytes(X.RBr) + sdsl::size_in_bytes(X.RBs), s > 1 ? sdsl::size_in_bytes(X.SB) + sdsl::size_in_bytes(X.SBr) : 0,
-            sdsl::size_in_bytes(X.L), sdsl::size_in_bytes(X.rmq), secs(T0));
+            sdsl::size_in_bytes(X.L), X.has_rmq ? sdsl::size_in_bytes(X.rmq) : 0, secs(T0));
     return 0;
 }

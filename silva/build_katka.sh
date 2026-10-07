@@ -9,20 +9,22 @@
 # What to build, for each text in INDEXES (defaults in brackets):
 #   CSA="explicit ef"   RLCSAs: explicit and/or Elias-Fano                                    [explicit]
 #   TAGS="1 4 16"       tag arrays with these sampling parameters (1 = unsampled)              [1]
+#   LIST=1              the RMQs over the tag arrays (bac.s*.tag.rmq), for document listing:
+#                       equal credit and LCAs from tags; counting does not need them         [0]
 #   SR="0 4 16"         r-index and sr-indexes with these sampling parameters (0 = r-index)    [none]
 #   GRIDS=1             the rz-index's LZ77 grids and their auxiliary structures, for LCA
 #                       queries without tags (rz-classify without -T or -S, -H/-A)             [0]
 #   NSEQ=1              number of sequences per genus (for normalized credit and -A)           [0]
 #   VFY=1               verification structures for digested matches (rzdg only)              [0]
-# (run_2l.sh builds the two-level parse indexes.)  THREADS (default: all cores) for the LZ77 parses.
+# THREADS (default: all cores) for the LZ77 parses.
 # Needs ../setup_deps.sh (sdsl-lite, Big-BWT, cliffy-experiments, SILVA), make -C ../rz-index, and seqtk.
 set -o pipefail
 S=$(cd "$(dirname "$0")" && pwd); RZ=$(dirname "$S"); B=$RZ/rz-index; W=$S/work; EXP=$RZ/cliffy-experiments/src
 FASTA=$S/exp1_data/SILVA_138.1_SSURef_NR99_tax_silva.fasta
 TAXTXT=$S/exp1_data/tax_slv_ssu_138.1.txt; TAXTRE=$S/exp1_data/tax_slv_ssu_138.1.tre
 ALL=${ALL:-0}; THREADS=${THREADS:-$(nproc)}
-if [ $ALL = 1 ]; then INDEXES="rz rzdg"; CSA="explicit ef"; TAGS="1 4 16"; SR="0 4 16"; GRIDS=1; NSEQ=1; VFY=1; fi
-INDEXES=${INDEXES:-rz}; CSA=${CSA:-explicit}; TAGS=${TAGS-1}; SR=${SR-}; GRIDS=${GRIDS:-0}; NSEQ=${NSEQ:-0}; VFY=${VFY:-0}
+if [ $ALL = 1 ]; then INDEXES="rz rzdg"; CSA="explicit ef"; TAGS="1 4 16"; LIST=1; SR="0 4 16"; GRIDS=1; NSEQ=1; VFY=1; fi
+INDEXES=${INDEXES:-rz}; CSA=${CSA:-explicit}; TAGS=${TAGS-1}; SR=${SR-}; GRIDS=${GRIDS:-0}; NSEQ=${NSEQ:-0}; VFY=${VFY:-0}; LIST=${LIST:-0}
 step() { echo "=== $(date '+%F %T') $*"; }
 fail() { echo "FAILED: $*"; exit 1; }
 command -v python3 >/dev/null || fail "missing python3"
@@ -82,14 +84,19 @@ index() {   # $1 = rz (undigested) or rzdg (digested)
     f=bac.csa; [ $c = ef ] && f=bac.csaef
     [ -s $f ] || { step "$1: $c RLCSA"; $B/rz-csabuild bac.bwt $f $c || fail "csa $c $1"; }
   done
-  for s in $TAGS; do [ -s bac.s$s.tag ] || { step "$1: tag array, s = $s"; $B/rz-tagbuild bac $s bac.s$s.tag || fail "tags s=$s $1"; }; done
+  for s in $TAGS; do   # with LIST=1, rebuild a tag array that lacks its RMQ (files of the old format carry it inside)
+    t=bac.s$s.tag
+    if [ -s $t ] && { [ $LIST = 0 ] || [ -s $t.rmq ] || [ "$(head -c 8 $t)" = RZTAG001 ]; }; then continue; fi
+    step "$1: tag array, s = $s$( [ $LIST = 1 ] && echo ', with RMQ' )"
+    $B/rz-tagbuild bac $s $t $( [ $LIST = 1 ] || echo -n ) || fail "tags s=$s $1"
+  done
   if [ -n "$SR" ]; then
     [ -s bac.rix ] || { step "$1: r-index"; $B/rz-build -A bac.S bac.bwt - - bac.tbl bac > ri-build.out 2>&1 || fail "r-index $1 (see $D/ri-build.out)"; }
     for s in $SR; do [ -s bac.s$s.sri ] || { step "$1: sr-index, s = $s"; $B/sr-build bac.rix - $s bac.s$s.sri >> sr-build.out 2>&1 || fail "sr-index s=$s $1"; }; done
   fi
   [ $NSEQ = 1 ] && { [ -s bac.nseq ] || for i in $(seq 1 $n); do grep -c '>' $W/ref/rna/doc_${i}_seq.fa; done > bac.nseq; }
   [ $VFY = 1 ] && [ $1 = rzdg ] && { [ -s bac.vfy ] || $B/rz-vfybuild bac.tbl bac.map bac.vfy || fail vfy; }
-  ls -l bac.rz bac.csa* bac.s*.tag bac.s*.sri bac.rix 2>/dev/null | awk '{print "  " $5 "\t" $NF}'
+  ls -l bac.rz bac.csa* bac.s*.tag bac.s*.tag.rmq bac.s*.sri bac.rix 2>/dev/null | awk '{print "  " $5 "\t" $NF}'
   cd $W
 }
 for x in $INDEXES; do index $x; done

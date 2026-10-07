@@ -28,12 +28,6 @@ for ds in rzdg rz; do
           done
         done
       done
-      if [ $ds = rz ]; then
-        echo -n "$ds $r L=$L 2l s=1 csa F=12: " >> $OUT
-        $B -L $L -l -C $D/bac.csa -T $D/bac.s1.tag -P $D/bac.k12s4.pix -F 12 $D/bac.rz $D/pf_reads.fq $D/pf_out_2l 2>&1 | grep -o "[0-9.]* us/read\|table [0-9.]* MB" | tr '\n' ' ' >> $OUT
-        $B -L $L -l -C $D/bac.csa -T $D/bac.s1.tag $D/bac.rz $D/pf_reads.fq $D/pf_out_0 2>/dev/null
-        cmp -s $D/pf_out_0 $D/pf_out_2l && echo "[identical]" >> $OUT || echo "[ANSWERS DIFFER]" >> $OUT
-      fi
     done
     rm -f $D/pf_reads.fq $D/pf_out_*
   done

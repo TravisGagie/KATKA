@@ -17,12 +17,9 @@ for r in V1_V2 V3_V4 V4_V4 V4_V5; do
 bml
 bml-F10     -F 10
 bml-F12     -F 12
-bml-2l-F12  -P $D/bac.k12s4.pix -F 12
 fb          -W
 fb-F10      -W -F 10
 fb-F12      -W -F 12
-fb-2l       -W -P $D/bac.k12s4.pix
-fb-2l-F12   -W -P $D/bac.k12s4.pix -F 12
 LIST
   done
 done
