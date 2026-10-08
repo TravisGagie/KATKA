@@ -1,3 +1,17 @@
+diff --git a/src/pfp_doc.cpp b/src/pfp_doc.cpp
+index d27470e..f5e5cf0 100644
+--- a/src/pfp_doc.cpp
++++ b/src/pfp_doc.cpp
+@@ -381,7 +381,8 @@ std::string execute_cmd(const char* cmd) {
+     }
+ 
+     // Check if the command failed
+-    size_t exit_code = WEXITSTATUS(pclose(pipe));
++    int pstatus = pclose(pipe);   // rz patch: older glibc's WEXITSTATUS needs an lvalue
++    size_t exit_code = WEXITSTATUS(pstatus);
+     if (exit_code != 0) {
+         std::cout << "\n";
+         FATAL_ERROR("external command failed ... here is the error message:\n%s", output.data());
 diff --git a/thirdparty/CMakeLists.txt b/thirdparty/CMakeLists.txt
 index 8572cbf..45bed55 100644
 --- a/thirdparty/CMakeLists.txt
