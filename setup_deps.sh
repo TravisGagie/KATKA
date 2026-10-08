@@ -5,6 +5,7 @@
 # Also needed: g++ (C++17), cmake, zlib, seqtk, ART (art_illumina), GNU time, Python 3 with
 # regex, requests, aiohttp, pandas and multiprocess.
 set -e
+export CMAKE_POLICY_VERSION_MINIMUM=3.5   # sdsl-lite and Big-BWT ask for CMake versions that CMake 4 rejects
 cd "$(dirname "$0")"; ROOT=$PWD
 get() {  # get <url> <dir> <commit>
   [ -d "$2" ] || git clone "$1" "$2"
