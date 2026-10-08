@@ -12,6 +12,10 @@ if [ "$(printf '%s\n3.13\n' "$cv" | sort -V | head -1)" != 3.13 ]; then
   echo "  Install a newer one without root:  python3 -m pip install --user cmake  (then put ~/.local/bin first in PATH)"
   exit 1
 fi
+# Cliffy's thirdparty/CMakeLists.txt defines libdivsufsort's targets again after sdsl-lite has defined them,
+# which recent CMake rejects: silva/cliffy_rz.patch skips the second definition (applied once)
+grep -q "rz patch" $S/cliffy/thirdparty/CMakeLists.txt || git -C $S/cliffy apply $S/cliffy_rz.patch \
+  || { echo "FAILED: could not apply silva/cliffy_rz.patch to silva/cliffy"; exit 1; }
 export CMAKE_POLICY_VERSION_MINIMUM=3.5      # its dependencies ask for CMake versions older than 3.5
 F="-include cstdint"                          # headers that forget <cstdint>
 # sdsl-lite template bodies that no longer compile under GCC 15 but are never used (only if g++ knows the flag)

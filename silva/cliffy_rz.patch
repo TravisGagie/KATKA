@@ -1,0 +1,24 @@
+diff --git a/thirdparty/CMakeLists.txt b/thirdparty/CMakeLists.txt
+index 8572cbf..45bed55 100644
+--- a/thirdparty/CMakeLists.txt
++++ b/thirdparty/CMakeLists.txt
+@@ -120,10 +120,15 @@ if(NOT divsufsort_POPULATED)
+   set(BUILD_EXAMPLES OFF CACHE BOOL "Do not build libdivsufsort example")
+   set(BUILD_DIVSUFSORT64 ON CACHE BOOL "Build libdivsufsort in 64-bits mode")
+ 
+-  add_subdirectory(${divsufsort_SOURCE_DIR} ${divsufsort_BINARY_DIR} EXCLUDE_FROM_ALL)
+-
+-  target_include_directories(divsufsort PUBLIC "${divsufsort_BINARY_DIR}/include")
+-  target_include_directories(divsufsort64 PUBLIC "${divsufsort_BINARY_DIR}/include")
++  # rz patch: newer CMake builds sdsl-lite's bundled libdivsufsort too, so the targets may already exist
++  if(NOT TARGET divsufsort)
++    add_subdirectory(${divsufsort_SOURCE_DIR} ${divsufsort_BINARY_DIR} EXCLUDE_FROM_ALL)
++    target_include_directories(divsufsort PUBLIC "${divsufsort_BINARY_DIR}/include")
++    target_include_directories(divsufsort64 PUBLIC "${divsufsort_BINARY_DIR}/include")
++  else()
++    target_include_directories(divsufsort PUBLIC "${sdsl_BINARY_DIR}/external/libdivsufsort/include")
++    target_include_directories(divsufsort64 PUBLIC "${sdsl_BINARY_DIR}/external/libdivsufsort/include")
++  endif()
+ endif()
+ 
+ 
