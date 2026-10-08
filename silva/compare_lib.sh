@@ -30,7 +30,10 @@ case $TOOL in
   *) echo "TOOL must be katka or cliffy (run run_katka.sh or run_cliffy.sh)"; exit 1 ;;
 esac
 REGIONS=${REGIONS:-"V1_V2 V3_V4 V4_V4 V4_V5"}; EVERY=${EVERY:-50}; MODE=${MODE:-freq}; THEIRS=${THEIRS:-1}
-KATKA_SPLIT=${KATKA_SPLIT:-0}; TMPSIZE=${TMPSIZE:-10GB}
+KATKA_SPLIT=${KATKA_SPLIT:-0}
+# Cliffy's temporary files hold the uncompressed profiles: 1,172 GB (minimizers) and 2,265 GB (full_text) in their
+# Table 1.  The files are sparse, so a generous --tmp-size costs only the disk actually written.
+tmpsize() { [ -n "$TMPSIZE" ] && echo $TMPSIZE || { [ $1 = full_text ] && echo 2600GB || echo 1400GB; }; }
 RD=$W/compare/reads; R=$W/compare/$TOOL-$(hostname -s); mkdir -p $RD $R/runs $R/scores
 exec > >(tee -a $R/$TOOL.log) 2>&1
 PIN=${PIN:-}; TS=""; [ -n "$PIN" ] && TS="taskset -c $PIN"
@@ -68,7 +71,7 @@ if [ -n "$CLIFFY" ]; then
     step "building Cliffy index $ix"
     mkdir -p $d; cp $W/ref/dna/filelist.txt $d/filelist.txt; tmp=${TMPDIR_CLIFFY:-$d}/temp_$ix
     /usr/bin/time --output=$d/time_and_mem.log $CL build --filelist $d/filelist.txt --output $d/output --revcomp --taxcomp \
-        $(cl_opts $ix) --two-pass $tmp --tmp-size $TMPSIZE 2> $d/build.log || fail "cliffy build $ix (see $d/build.log)"
+        $(cl_opts $ix) --two-pass $tmp --tmp-size $(tmpsize $ix) 2> $d/build.log || fail "cliffy build $ix (see $d/build.log)"
     rm -rf $tmp $tmp.tmp_*; date > $d/done
   done
 fi

@@ -11,7 +11,7 @@ endif
 LIB    = -L$(SDSL)/lib -lsdsl -ldivsufsort -ldivsufsort64 -lz
 LIBSD  = -L$(SDSL)/lib -lsdsl -lz
 
-all: rz-prep rz-lz77 rz-build rz-bench rz-genpat rz-prof rz-mvbuild rz-mvtest sr-build rz-aux rz-dgcheck rz-classify rz-csabuild rz-vfybuild rz-tagbuild rz-taginfo rz-gtagbuild
+all: rz-prep rz-lz77 rz-build rz-bench rz-genpat rz-prof rz-mvbuild rz-mvtest sr-build rz-aux rz-dgcheck rz-classify rz-csabuild rz-vfybuild rz-tagbuild rz-taginfo rz-gtagbuild rz-kbbuild
 test-tools: mbwt ri-build-from
 
 rz-prep: rz_prep.cpp digest.hpp
@@ -43,7 +43,7 @@ rz-aux: rz_aux.cpp rz_index.hpp digest.hpp
 	$(CXX) $(CXXFLAGS) $(INC) -o $@ $< $(LIB)
 rz-dgcheck: rz_dgcheck.cpp rz_index.hpp digest.hpp
 	$(CXX) $(CXXFLAGS) $(INC) -o $@ $< $(LIB)
-rz-classify: rz_classify.cpp rz_index.hpp digest.hpp rlcsa.hpp sr.hpp tag.hpp gtag.hpp
+rz-classify: rz_classify.cpp rz_index.hpp digest.hpp rlcsa.hpp sr.hpp tag.hpp gtag.hpp kbloom.hpp
 	$(CXX) $(CXXFLAGS) $(INC) -o $@ $< $(LIB) -pthread
 rz-csabuild: rz_csabuild.cpp rz_index.hpp rlcsa.hpp runrank.hpp efrank.hpp
 	$(CXX) $(CXXFLAGS) $(INC) -o $@ $< $(LIB)
@@ -63,3 +63,5 @@ rz-gtagbuild: rz_gtagbuild.cpp tag.hpp gtag.hpp rz_index.hpp
 rz-gbench: rz_gbench.cpp tag.hpp gtag.hpp rz_index.hpp
 	$(CXX) $(CXXFLAGS) $(INC) -o $@ $< $(LIB)
 
+rz-kbbuild: rz_kbbuild.cpp kbloom.hpp
+	$(CXX) $(CXXFLAGS) -o $@ rz_kbbuild.cpp

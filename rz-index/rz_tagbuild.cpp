@@ -11,24 +11,36 @@
 //   (so prefix.tagruns keeps its format), 64-bit otherwise.
 #include "tag.hpp"
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <deque>
 #include <chrono>
 using namespace rz;
 static double secs(std::chrono::steady_clock::time_point t) { return std::chrono::duration<double>(std::chrono::steady_clock::now() - t).count(); }
+static std::string p_cache(const std::string &p, bool bysp) { return p + (bysp ? ".sp.tagruns" : ".tagruns"); }
 template <class T> static int run(int argc, char **argv) {
-    bool norm = argc == 5 && std::string(argv[4]) == "-n";   // -n: no RMQ (counting only; listing needs it)
-    if (argc != 4 && !norm) { fprintf(stderr, "usage: rz-tagbuild prefix s out.tag [-n]\n  writes out.tag and, unless -n, out.tag.rmq (for listing)\n"); return 1; }
+    bool norm = false, bysp = false;            // -n: no RMQ (counting only; listing needs it); -S: tags are species
+    for (int i = 4; i < argc; ++i) { std::string o = argv[i]; if (o == "-n") norm = true; else if (o == "-S") bysp = true; else argc = 0; }
+    if (argc < 4) { fprintf(stderr, "usage: rz-tagbuild prefix s out.tag [-n] [-S]\n  writes out.tag and, unless -n, out.tag.rmq (for listing)\n  -S: the tag of a position is the species of its genome (column 2 of prefix.tbl, numbered in order of\n      first appearance) instead of the genome itself; cached in prefix.sp.tagruns\n"); return 1; }
+    const std::string cache = p_cache(argv[1], bysp);
     std::string p = argv[1]; u64 s = std::stoull(argv[2]); auto T0 = std::chrono::steady_clock::now();
     std::vector<T> rs; std::vector<uint16_t> tg; u64 n = 0;
     {   // stage 1
-        std::ifstream c(p + ".tagruns", std::ios::binary);
+        std::ifstream c(cache, std::ios::binary);
         if (c) {
             u64 r; c.read((char *)&n, 8); c.read((char *)&r, 8); rs.resize(r); tg.resize(r);
             c.read((char *)rs.data(), sizeof(T) * r); c.read((char *)tg.data(), 2 * r);
         } else {
             std::vector<u64> start; std::ifstream tb(p + ".tbl"); std::string line;
-            while (std::getline(tb, line)) { std::istringstream ss(line); std::string x; for (int i = 0; i < 5; ++i) std::getline(ss, x, '\t'); start.push_back(std::stoull(x)); }
+            std::vector<int> cls; std::map<std::string, int> spid;   // -S: species number of each genome
+            while (std::getline(tb, line)) {
+                std::istringstream ss(line); std::string x, sp;
+                for (int i = 0; i < 5; ++i) { std::getline(ss, x, '\t'); if (i == 1) sp = x; }
+                start.push_back(std::stoull(x));
+                auto it = spid.find(sp); if (it == spid.end()) it = spid.emplace(sp, (int)spid.size()).first;
+                cls.push_back(it->second);
+            }
+            if (bysp) fprintf(stderr, "tags: %zu species over %zu genomes\n", spid.size(), start.size());
             std::ifstream ri_in(p + ".rix", std::ios::binary);
             if (!ri_in) { fprintf(stderr, "rz-tagbuild: %s.rix not found (build it with rz-build -A)\n", p.c_str()); return 1; }
             rz::rindex RI; RI.load(ri_in);
@@ -52,12 +64,13 @@ template <class T> static int run(int argc, char **argv) {
                     cd = std::upper_bound(start.begin(), start.end(), q) - start.begin() - 1;
                     g0 = start[cd]; g1 = cd + 1 < (int)start.size() ? start[cd + 1] : ~0ULL;
                 }
-                if (cd != prev) { rs.push_back(row); tg.push_back(cd); prev = cd; } else rs.back() = row;   // runs found bottom-up
+                int tv = bysp ? cls[cd] : cd;
+                if (tv != prev) { rs.push_back(row); tg.push_back(tv); prev = tv; } else rs.back() = row;   // runs found bottom-up
                 if (row) d = RI.phi(d);
             }
             std::reverse(rs.begin(), rs.end()); std::reverse(tg.begin(), tg.end());
             if (rs.empty() || rs[0] != 0) { fprintf(stderr, "rz-tagbuild: internal error: no run at row 0\n"); return 1; }
-            std::ofstream o(p + ".tagruns", std::ios::binary); u64 r = rs.size();
+            std::ofstream o(cache, std::ios::binary); u64 r = rs.size();
             o.write((char *)&n, 8); o.write((char *)&r, 8); o.write((char *)rs.data(), sizeof(T) * r); o.write((char *)tg.data(), 2 * r);
         }
     }

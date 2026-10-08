@@ -78,7 +78,10 @@ int main(int argc, char **argv) {
     {
         std::ifstream t(tfile);
         string line, last; u64 pos = 0;
-        while (std::getline(t, line)) {
+        std::vector<string> lines; bool onestrand = false;     // rz-prep -R: one line per strand (#rc names)
+        while (std::getline(t, line)) { lines.push_back(line); auto p3 = line.find("#rc\t"); if (p3 != string::npos) onestrand = true; }
+        if (onestrand && !(nogrids || baseline)) { std::cerr << "a table with separate strands (rz-prep -R) needs -G or -A\n"; return 1; }
+        for (auto &line : lines) {
             std::istringstream ss(line);
             string a, sp, path; u64 len, st;
             std::getline(ss, a, '\t'); std::getline(ss, sp, '\t'); std::getline(ss, path, '\t');
@@ -86,7 +89,7 @@ int main(int argc, char **argv) {
             if (st != pos) { std::cerr << "table/offset mismatch\n"; return 1; }
             if (spstart.empty() || sp != last) { spstart.push_back(pos); last = sp; }
             sstart.push_back(pos); slen.push_back(len); pos += len + 1;
-            sstart.push_back(pos); slen.push_back(len); pos += len + 1;
+            if (!onestrand) { sstart.push_back(pos); slen.push_back(len); pos += len + 1; }
         }
         if (pos != N) { std::cerr << "table does not match |S| (" << pos << " vs " << N << ")\n"; return 1; }
     }
@@ -108,6 +111,16 @@ int main(int argc, char **argv) {
     vector<u64> doff;                                     // dataset starts in S
     if (K == 1) doff = {0};
     else if (K == spstart.size()) doff = spstart;
+    else if (Sfile.size() > 2 && Sfile.compare(Sfile.size() - 2, 2, ".S") == 0 &&
+             std::ifstream(Sfile.substr(0, Sfile.size() - 2) + ".datasets")) {     // rz-prep -R / -c: datasets are not species
+        std::ifstream dl(Sfile.substr(0, Sfile.size() - 2) + ".datasets"); string f; u64 o = 0;
+        while (std::getline(dl, f)) {
+            if (f.empty()) continue;
+            FILE *g = fopen(f.c_str(), "rb"); if (!g) { std::cerr << "cannot open dataset " << f << "\n"; return 1; }
+            fseeko(g, 0, SEEK_END); doff.push_back(o); o += ftello(g); fclose(g);
+        }
+        if (doff.size() != K || o != N) { std::cerr << "the BWT has " << K << " terminators, but the .datasets file lists " << doff.size() << " datasets of total length " << o << " (|S| = " << N << ")\n"; return 1; }
+    }
     else {
         std::cerr << "the BWT has " << K << " terminators, but S has 1 text and " << spstart.size()
                   << " species datasets\n";

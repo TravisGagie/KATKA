@@ -26,6 +26,9 @@
 //   -V f : with -l on a digest, verify each occurrence against the DNA (rz-vfybuild file f): align at the
 //          MEM's middle minimizer and extend the exact match; report the maximal verified matches of at
 //          least L bases, each with the genera whose occurrences contain it
+//   -U : with -L, homopolymer compression (an index built with rz-prep -U): each read's runs of equal bases
+//          are collapsed before BML, L counts compressed bases, and the listings give each MEM's span in the
+//          original read (bases), so its weight is its length in the read
 //   -m minlen : ignore features shorter than minlen (default 1: report all, as Cliffy does)
 //   -x f : the rz-index's aux structures
 //   -C f : do the backward searches on the RLCSA f (rz-csabuild) instead of the RLBWT
@@ -45,6 +48,7 @@
 #include "sr.hpp"
 #include "vfy.hpp"
 #include "tag.hpp"
+#include "kbloom.hpp"
 #include <unordered_map>
 #include <thread>
 #include <mutex>
@@ -164,6 +168,7 @@ static int FT_t = 0; static u64 FT_bytes = 0;
 static u64 TRIM_FIX = 0; static bool TRIM_FIXON = false;
 static u64 TRIM_K = 0, TRIM_W = 0; static thread_local u64 TR_mems = 0, TR_trim = 0, TR_skip = 0;   // RZ_TRIM=k,w: emulate a phrase index (minimizer phrases) by trimming MEMs
 static u64 KEBAB_K = 0; static thread_local u64 KB_total = 0, KB_kept = 0;   // RZ_KEBAB=k: ideal KeBaB pseudo-MEMs before BML
+static rz::kbloom KBF; static bool KBON = false;   // -K file.kbf: KeBaB with a blocked Bloom filter of the text's canonical k-mers (rz-kbbuild)
 static u64 HYB_T = 0; static double HYB_A = 0; static bool HYB = false; static thread_local u64 NHYB = 0;
 static std::vector<u64> NSEQ;               // -N: prefix sums of the number of sequences per document
 template <class E, class SV>
@@ -524,6 +529,22 @@ void classify_bml_dna(E &E_, rz::index &Z, const string &read, u64 L, bool list,
         while (i < n0 && rz::dg_b2(read[i]) >= 0) ++i;
         u64 n = i - r0;
         KB_total += n;
+        if (KBON) {     // real KeBaB: maximal substrings all of whose k-mers pass the filter (timed as search)
+            double tk = rz::now(); u64 K = KBF.k;
+            if (n < K) { st.tsearch += rz::now() - tk; continue; }
+            static thread_local std::vector<uint64_t> codes; codes.assign(n - K + 1, 0);
+            KBF.kmers((const unsigned char *)read.data() + r0, n, [&](uint64_t p, uint64_t c) { codes[p] = c; });
+            for (u64 p = 0; p < codes.size() && p < 8; ++p) KBF.prefetch(codes[p]);
+            u64 s0 = 0; bool open = false;
+            for (u64 p = 0; p < codes.size(); ++p) {
+                if (p + 8 < codes.size()) KBF.prefetch(codes[p + 8]);
+                bool ok = KBF.has(codes[p]);
+                if (ok && !open) { s0 = p; open = true; }
+                if (!ok && open) { segs.push_back({r0 + s0, p + K - 1 - s0}); open = false; }
+            }
+            if (open) segs.push_back({r0 + s0, n - s0});
+            st.tsearch += rz::now() - tk; continue;
+        }
         if (!KEBAB_K || n < KEBAB_K) { segs.push_back({r0, n}); continue; }
         // ideal KeBaB (exact k-mer membership, i.e. a filter without false positives; not timed, not counted
         // as steps): split the run into maximal substrings all of whose k-mers occur in the database
@@ -536,10 +557,11 @@ void classify_bml_dna(E &E_, rz::index &Z, const string &read, u64 L, bool list,
         }
         if (open) segs.push_back({r0 + s0, n - s0});
     }
+    u64 kb_end = 0;                                  // pseudo-MEMs overlap: count the bases of their union
     for (auto sg : segs) {
         u64 r0 = sg.first, n = sg.second;
         if (n < L) continue;
-        KB_kept += n;
+        KB_kept += r0 + n > kb_end ? r0 + n - std::max(r0, kb_end) : 0; kb_end = std::max(kb_end, r0 + n);
         const char *R = read.data() + r0;
         std::vector<std::pair<u64, u64>> found;
         static thread_local std::vector<char> tsel;               // RZ_TRIM: minimizer positions (all tied minima) of this run
@@ -708,6 +730,26 @@ void classify_fb(E &E_, rz::index &Z, const string &read, u64 L, string &line, S
     if (st.nfeat == nfeat0) ++st.nuncl;
 }
 
+static bool HPC = false;                     // -U: homopolymer-compressed index and reads
+static void hpc_read(const string &s, string &h, std::vector<uint32_t> &ofs) {   // ofs[i] = read position of h[i]
+    h.clear(); ofs.clear();
+    for (size_t i = 0; i < s.size(); ++i) if (i == 0 || s[i] != s[i - 1]) { h.push_back(s[i]); ofs.push_back((uint32_t)i); }
+    ofs.push_back((uint32_t)s.size());
+}
+static void hpc_remap(string &line, const std::vector<uint32_t> &ofs) {          // [a,b] in h -> its span in the read
+    string o; o.reserve(line.size() + 16); size_t i = 0;
+    while (i < line.size()) {
+        if (line[i] == '[') {
+            size_t c = line.find(',', i), e = line.find(']', i);
+            if (c != string::npos && e != string::npos && c < e) {
+                u64 a = std::stoull(line.substr(i + 1, c - i - 1)), b = std::stoull(line.substr(c + 1, e - c - 1));
+                o += "[" + std::to_string(ofs[a]) + "," + std::to_string(ofs[b + 1] - 1) + "]"; i = e + 1; continue;
+            }
+        }
+        o += line[i++];
+    }
+    line.swap(o);
+}
 static int NJ = 1;                           // -j: threads
 static std::mutex CNT_m;
 static u64 T_TR_mems = 0, T_TR_trim = 0, T_TR_skip = 0, T_KB_total = 0, T_KB_kept = 0, T_NHYB = 0, T_PX_text = 0, T_PX_phr = 0, T_PX_map = 0, T_TAG_lf = 0;
@@ -723,16 +765,24 @@ static void add_stats(Stats &a, const Stats &b) {
 }
 
 int main(int argc, char **argv) {
-    string auxfile, csafile, mapfile, srfile, rixfile, vfyfile, nseqfile, tagfile; u64 minlen = 1, bmlL = 0; int opt; bool mem = false, list = false;
+    string kbffile, auxfile, csafile, mapfile, srfile, rixfile, vfyfile, nseqfile, tagfile; u64 minlen = 1, bmlL = 0; int opt; bool mem = false, list = false;
     const char *usage = "usage: rz-classify [-j threads] [-M | -L bases [-l]] [-x aux] [-m minlen] [-C csa] [-B map] [-S sri -R rix] index.rz reads.fq out.listings\n";
-    while ((opt = getopt(argc, argv, "MWlx:m:C:B:S:R:L:V:H:A:N:T:F:j:")) != -1) {
-        if (opt == 'x') auxfile = optarg; else if (opt == 'm') minlen = std::stoull(optarg); else if (opt == 'M') mem = true; else if (opt == 'W') FB = true; else if (opt == 'l') list = true; else if (opt == 'L') bmlL = std::stoull(optarg); else if (opt == 'V') vfyfile = optarg; else if (opt == 'H') HYB_T = std::stoull(optarg); else if (opt == 'A') HYB_A = std::stod(optarg); else if (opt == 'N') nseqfile = optarg; else if (opt == 'T') tagfile = optarg; else if (opt == 'F') FT_t = std::stoi(optarg); else if (opt == 'j') NJ = std::max(1, std::stoi(optarg)); else if (opt == 'C') csafile = optarg; else if (opt == 'B') mapfile = optarg; else if (opt == 'S') srfile = optarg; else if (opt == 'R') rixfile = optarg;
+    while ((opt = getopt(argc, argv, "MWUlx:m:C:B:S:R:L:V:H:A:N:T:F:j:K:")) != -1) {
+        if (opt == 'U') { HPC = true; continue; }
+        if (opt == 'x') auxfile = optarg; else if (opt == 'm') minlen = std::stoull(optarg); else if (opt == 'M') mem = true; else if (opt == 'W') FB = true; else if (opt == 'l') list = true; else if (opt == 'L') bmlL = std::stoull(optarg); else if (opt == 'V') vfyfile = optarg; else if (opt == 'H') HYB_T = std::stoull(optarg); else if (opt == 'A') HYB_A = std::stod(optarg); else if (opt == 'N') nseqfile = optarg; else if (opt == 'T') tagfile = optarg; else if (opt == 'F') FT_t = std::stoi(optarg); else if (opt == 'j') NJ = std::max(1, std::stoi(optarg)); else if (opt == 'C') csafile = optarg; else if (opt == 'B') mapfile = optarg; else if (opt == 'S') srfile = optarg; else if (opt == 'R') rixfile = optarg; else if (opt == 'K') kbffile = optarg;
         else { fputs(usage, stderr); return 1; }
     }
     if (argc - optind != 3) { fputs(usage, stderr); return 1; }
     if (FT_t && (!bmlL || FT_t > (rz::bytemap().on ? 3 : 13))) { fprintf(stderr, "-F needs -L, and t <= 13 (t <= 3 with -B)\n"); return 1; }
+    if (HPC && (!bmlL || FB || !mapfile.empty())) { fprintf(stderr, "-U needs -L, without -W or -B\n"); return 1; }
     if (FB && (!bmlL || tagfile.empty() || rz::bytemap().on)) { fprintf(stderr, "-W needs -L and -T, without -B\n"); return 1; }
     if (const char *kb = getenv("RZ_KEBAB")) KEBAB_K = std::stoull(kb);
+    if (!kbffile.empty()) {
+        if (!bmlL || KEBAB_K) { fprintf(stderr, "-K needs -L, and not RZ_KEBAB\n"); return 1; }
+        if (!KBF.load(kbffile)) { fprintf(stderr, "cannot load %s\n", kbffile.c_str()); return 1; }
+        if (KBF.k > bmlL) { fprintf(stderr, "-K: the filter's k = %u exceeds L\n", KBF.k); return 1; }
+        KBON = true; fprintf(stderr, "KeBaB filter %s: k=%u, h=%u, %.3f GB\n", kbffile.c_str(), KBF.k, KBF.h, KBF.bytes() / 1e9);
+    }
     COUNTS = getenv("RZ_COUNTS") != nullptr;
     if (const char *lf = getenv("RZ_IVLOG")) { IVLOG = fopen(lf, "wb"); if (!IVLOG) { fprintf(stderr, "cannot write %s\n", lf); return 1; } atexit([] { fclose(IVLOG); }); }
     if (const char *tf = getenv("RZ_TRIMFIX")) { TRIM_FIX = std::stoull(tf); TRIM_FIXON = true; }
@@ -807,6 +857,12 @@ int main(int argc, char **argv) {
                         bool l2 = std::decay_t<decltype(E_)>::isrz ? false : list;
                         if (rz::bytemap().on) classify_bml(E_, Z, sq[i], bmlL, l2, ln[i], ts);
                         else if (FB) { if constexpr (std::decay_t<decltype(E_)>::isrz) classify_fb(E_, Z, sq[i], bmlL, ln[i], ts); }
+                        else if (HPC) {
+                            static thread_local string hs; static thread_local std::vector<uint32_t> ofs;
+                            double t0 = rz::now(); hpc_read(sq[i], hs, ofs); ts.tsearch += rz::now() - t0;
+                            classify_bml_dna(E_, Z, hs, bmlL, l2, ln[i], ts);
+                            hpc_remap(ln[i], ofs);
+                        }
                         else classify_bml_dna(E_, Z, sq[i], bmlL, l2, ln[i], ts);
                     } else {
                         if (rz::bytemap().on) sq[i] = rz::digest_mapped(sq[i]);
@@ -856,6 +912,6 @@ int main(int argc, char **argv) {
     fprintf(stderr, "threads=%d wall %.2f s, %.0f reads/s\n", NJ, WALL, WALL > 0 ? st.nreads / WALL : 0.0);
     if (FT_t) fprintf(stderr, "lookups: table %.1f MB\n", FT_bytes / 1e6);
     if (TRIM_K) fprintf(stderr, "trim k=%lu w=%lu: %lu MEMs trimmed by %.1f bases on average, %lu MEMs dropped\n", TRIM_K, TRIM_W, T_TR_mems, T_TR_mems ? (double)T_TR_trim / T_TR_mems : 0.0, T_TR_skip);
-    if (KEBAB_K) fprintf(stderr, "kebab k=%lu: %.1f%% of read bases in pseudo-MEMs of length >= L\n", KEBAB_K, T_KB_total ? 100.0 * T_KB_kept / T_KB_total : 0.0);
+    if (KEBAB_K || KBON) fprintf(stderr, "kebab k=%lu: %.1f%% of read bases in pseudo-MEMs of length >= L\n", (u64)(KBON ? KBF.k : KEBAB_K), T_KB_total ? 100.0 * T_KB_kept / T_KB_total : 0.0);
     return st.nfail ? 2 : 0;
 }
