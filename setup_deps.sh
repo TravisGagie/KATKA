@@ -13,7 +13,9 @@ get() {  # get <url> <dir> <commit>
 }
 mkdir -p deps
 get https://github.com/simongog/sdsl-lite deps/sdsl-lite c32874c
-[ -d deps/sdsl/lib ] || (cd deps/sdsl-lite && ./install.sh "$ROOT/deps/sdsl")
+# GCC 14+ rejects template bodies in sdsl-lite that are never used: silence that error only where g++ knows the flag
+SDSL_FLAGS=""; echo 'int main() { return 0; }' | g++ -Werror -Wno-template-body -x c++ - -o /dev/null 2> /dev/null && SDSL_FLAGS="-Wno-template-body"
+[ -d deps/sdsl/lib ] || (cd deps/sdsl-lite && CXXFLAGS="$SDSL_FLAGS" ./install.sh "$ROOT/deps/sdsl")
 get https://github.com/alshai/Big-BWT deps/Big-BWT 5b00650
 make -C deps/Big-BWT
 get https://gitlab.com/manzai/pfp-merge.git pfp-merge 5510113

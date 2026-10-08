@@ -39,7 +39,7 @@ rz-aux: rz_aux.cpp rz_index.hpp digest.hpp
 	$(CXX) $(CXXFLAGS) $(INC) -o $@ $< $(LIB)
 rz-dgcheck: rz_dgcheck.cpp rz_index.hpp digest.hpp
 	$(CXX) $(CXXFLAGS) $(INC) -o $@ $< $(LIB)
-rz-classify: rz_classify.cpp rz_index.hpp digest.hpp rlcsa.hpp sr.hpp parse.hpp tag.hpp gtag.hpp
+rz-classify: rz_classify.cpp rz_index.hpp digest.hpp rlcsa.hpp sr.hpp tag.hpp gtag.hpp
 	$(CXX) $(CXXFLAGS) $(INC) -o $@ $< $(LIB) -pthread
 rz-csabuild: rz_csabuild.cpp rz_index.hpp rlcsa.hpp runrank.hpp efrank.hpp
 	$(CXX) $(CXXFLAGS) $(INC) -o $@ $< $(LIB)
@@ -59,5 +59,3 @@ rz-gtagbuild: rz_gtagbuild.cpp tag.hpp gtag.hpp rz_index.hpp
 rz-gbench: rz_gbench.cpp tag.hpp gtag.hpp rz_index.hpp
 	$(CXX) $(CXXFLAGS) $(INC) -o $@ $< $(LIB)
 
-rz-parsebuild: rz_parsebuild.cpp parse.hpp runrank.hpp digest.hpp
-	$(CXX) $(CXXFLAGS) $(INC) -o $@ $< $(LIB)
