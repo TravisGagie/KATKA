@@ -16,6 +16,8 @@
 // Symbols with many runs also get a small jump table indexed by the top bits of
 // the position, so a rank query binary-searches only a short slice of the list.
 // The table has about R/8 entries for a symbol with R runs (~6% overhead).
+//
+// RunRank stores positions and counts in 32 bits (n < 2^32); RunRank64 in 64 bits.
 #pragma once
 #include <cstdint>
 #include <cstdio>
@@ -23,8 +25,8 @@
 #include <algorithm>
 #include <stdexcept>
 
-struct RunRank {
-    struct Run { uint32_t start, cum; };
+template <class W> struct RunRankT {
+    struct Run { W start, cum; };
 
     uint64_t n = 0;
     uint32_t sigma = 0;
@@ -39,7 +41,7 @@ struct RunRank {
 
     void build(const std::vector<uint32_t>& s, uint32_t sig) {
         n = s.size(); sigma = sig;
-        if (n >= (1ull << 32)) throw std::runtime_error("sequence too long for 32-bit runs");
+        if (sizeof(W) < 8 && n >= (1ull << 32)) throw std::runtime_error("sequence too long for 32-bit runs");
         std::vector<uint64_t> cnt(sigma + 1, 0);
         nruns = 0;
         for (uint64_t i = 0; i < n; ++i)
@@ -48,16 +50,16 @@ struct RunRank {
         for (uint32_t c = 0; c < sigma; ++c) off[c + 1] = off[c] + cnt[c] + 1;
         runs.assign(off[sigma], Run{0, 0});
         std::vector<uint64_t> pos(off.begin(), off.end() - 1);
-        std::vector<uint32_t> seen(sigma, 0);
+        std::vector<W> seen(sigma, 0);
         for (uint64_t i = 0; i < n;) {
             uint64_t j = i + 1;
             while (j < n && s[j] == s[i]) ++j;
             uint32_t c = s[i];
-            runs[pos[c]++] = Run{(uint32_t)i, seen[c]};
-            seen[c] += (uint32_t)(j - i);
+            runs[pos[c]++] = Run{(W)i, seen[c]};
+            seen[c] += (W)(j - i);
             i = j;
         }
-        for (uint32_t c = 0; c < sigma; ++c) runs[pos[c]] = Run{(uint32_t)n, seen[c]};
+        for (uint32_t c = 0; c < sigma; ++c) runs[pos[c]] = Run{(W)n, seen[c]};
 
         // jump tables
         joff.assign(sigma + 1, 0);
@@ -140,3 +142,5 @@ struct RunRank {
         rv(f, off); rv(f, runs); rv(f, joff); rv(f, shift); rv(f, jumps);
     }
 };
+using RunRank = RunRankT<uint32_t>;
+using RunRank64 = RunRankT<uint64_t>;

@@ -4,6 +4,10 @@ RINDEX ?= $(DEPS)/r-index-pfp/internal
 CXX    ?= g++
 CXXFLAGS ?= -std=c++17 -O3 -march=native -DNDEBUG -w
 INC    = -I$(SDSL)/include -I$(RINDEX)/..
+# make NO64=1: texts of fewer than 2^32 characters only (explicit RLCSA and tag-array build without 64-bit code)
+ifeq ($(NO64),1)
+CXXFLAGS += -DRZ_NO64
+endif
 LIB    = -L$(SDSL)/lib -lsdsl -ldivsufsort -ldivsufsort64 -lz
 LIBSD  = -L$(SDSL)/lib -lsdsl -lz
 
