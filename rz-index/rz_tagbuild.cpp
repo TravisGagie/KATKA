@@ -1,10 +1,12 @@
 // Build the tag index (tag.hpp) of a document collection S built by rz-prep (one document per genus).
 // usage: rz-tagbuild <prefix> <s> <out.tag> [-n]
 //   writes out.tag and, unless -n, out.tag.rmq, the RMQ that document listing needs (counting does not).
-//   reads prefix.S, prefix.tbl and prefix.rz (its RLBWT, for LF); s = 1: every run's tag is stored.
-//   Stage 1 (suffix sorting, runs and their tags) is cached in prefix.tagruns.
+//   reads prefix.tbl, prefix.rix (rz-build -A: the r-index's SA samples at BWT run boundaries) and, for s > 1,
+//   prefix.rz (its RLBWT, for LF); s = 1: every run's tag is stored.
+//   Stage 1 (the runs and their tags) is cached in prefix.tagruns.  It builds no suffix array: it streams the
+//   suffix array from the bottom of the BWT up with phi (SA[x-1] = phi(SA[x])), in memory proportional to the
+//   number of BWT runs plus the output, and maps each entry to its document by a predecessor search.
 #include "tag.hpp"
-#include <divsufsort.h>
 #include <fstream>
 #include <sstream>
 #include <deque>
@@ -22,18 +24,28 @@ int main(int argc, char **argv) {
             u64 r; c.read((char *)&n, 8); c.read((char *)&r, 8); rs.resize(r); tg.resize(r);
             c.read((char *)rs.data(), 4 * r); c.read((char *)tg.data(), 2 * r);
         } else {
-            FILE *f = fopen((p + ".S").c_str(), "rb"); fseek(f, 0, SEEK_END); long N = ftell(f); fseek(f, 0, SEEK_SET);
-            std::vector<unsigned char> S(N); if (fread(S.data(), 1, N, f) != (size_t)N) return 1; fclose(f);
             std::vector<u64> start; std::ifstream tb(p + ".tbl"); std::string line;
             while (std::getline(tb, line)) { std::istringstream ss(line); std::string x; for (int i = 0; i < 5; ++i) std::getline(ss, x, '\t'); start.push_back(std::stoull(x)); }
-            std::vector<int32_t> SA(N); divsufsort(S.data(), SA.data(), (int32_t)N);
-            n = N + 1;                                  // row 0 is the terminator
-            int prev = -1;
-            for (u64 row = 0; row < n; ++row) {
-                u64 q = row ? (u64)SA[row - 1] : N - 1;   // row 0: give it the last document
-                int d = std::upper_bound(start.begin(), start.end(), q) - start.begin() - 1;
-                if (d != prev) { rs.push_back(row); tg.push_back(d); prev = d; }
+            std::ifstream ri_in(p + ".rix", std::ios::binary);
+            if (!ri_in) { fprintf(stderr, "rz-tagbuild: %s.rix not found (build it with rz-build -A)\n", p.c_str()); return 1; }
+            rz::rindex RI; RI.load(ri_in);
+            n = RI.n; u64 N = n - 1;                    // row 0 is the terminator
+            if (RI.dstart.rank(n) != 1) { fprintf(stderr, "rz-tagbuild: expected one string (one terminator)\n"); return 1; }
+            fprintf(stderr, "r-index samples loaded (%.0f s); streaming the suffix array\n", secs(T0));
+            u64 d = RI.esa[RI.bwt.R - 1];               // SA[n-1]
+            int prev = -1; u64 g0 = 0, g1 = start.size() > 1 ? start[1] : ~0ULL;   // cached document [g0, g1)
+            int cd = 0;
+            for (u64 row = n; row-- > 0;) {
+                u64 q = d < N ? d : N - 1;              // row 0: give it the last document
+                if (q < g0 || q >= g1) {
+                    cd = std::upper_bound(start.begin(), start.end(), q) - start.begin() - 1;
+                    g0 = start[cd]; g1 = cd + 1 < (int)start.size() ? start[cd + 1] : ~0ULL;
+                }
+                if (cd != prev) { rs.push_back(row); tg.push_back(cd); prev = cd; } else rs.back() = row;   // runs found bottom-up
+                if (row) d = RI.phi(d);
             }
+            std::reverse(rs.begin(), rs.end()); std::reverse(tg.begin(), tg.end());
+            if (rs.empty() || rs[0] != 0) { fprintf(stderr, "rz-tagbuild: internal error: no run at row 0\n"); return 1; }
             std::ofstream o(p + ".tagruns", std::ios::binary); u64 r = rs.size();
             o.write((char *)&n, 8); o.write((char *)&r, 8); o.write((char *)rs.data(), 4 * r); o.write((char *)tg.data(), 2 * r);
         }

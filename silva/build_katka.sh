@@ -87,6 +87,7 @@ index() {   # $1 = rz (undigested) or rzdg (digested)
   for s in $TAGS; do   # with LIST=1, rebuild a tag array that lacks its RMQ (files of the old format carry it inside)
     t=bac.s$s.tag
     if [ -s $t ] && { [ $LIST = 0 ] || [ -s $t.rmq ] || [ "$(head -c 8 $t)" = RZTAG001 ]; }; then continue; fi
+    [ -s bac.rix ] || [ -s bac.tagruns ] || { step "$1: SA samples at BWT run boundaries (r-index)"; $B/rz-build -A bac.S bac.bwt - - bac.tbl bac > ri-build.out 2>&1 || fail "r-index $1 (see $D/ri-build.out)"; }
     step "$1: tag array, s = $s$( [ $LIST = 1 ] && echo ', with RMQ' )"
     $B/rz-tagbuild bac $s $t $( [ $LIST = 1 ] || echo -n ) || fail "tags s=$s $1"
   done
