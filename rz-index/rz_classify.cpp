@@ -168,6 +168,13 @@ static int FT_t = 0; static u64 FT_bytes = 0;
 static u64 TRIM_FIX = 0; static bool TRIM_FIXON = false;
 static u64 TRIM_K = 0, TRIM_W = 0; static thread_local u64 TR_mems = 0, TR_trim = 0, TR_skip = 0;   // RZ_TRIM=k,w: emulate a phrase index (minimizer phrases) by trimming MEMs
 static u64 KEBAB_K = 0; static thread_local u64 KB_total = 0, KB_kept = 0;   // RZ_KEBAB=k: ideal KeBaB pseudo-MEMs before BML
+static int MIN3 = 0; static thread_local u64 LC_drop = 0;   // -D d: ignore MEMs with fewer than d distinct 3-mers (low complexity)
+static inline int distinct3(const char *s, u64 m) {
+    uint64_t seen = 0; int c0 = -1, c1 = -1;
+    for (u64 i = 0; i < m; ++i) { int c = rz::dg_b2((unsigned char)s[i]); if (c < 0) { c0 = c1 = -1; continue; }
+        if (c0 >= 0) seen |= 1ULL << (c0 * 16 + c1 * 4 + c); c0 = c1; c1 = c; }
+    return __builtin_popcountll(seen);
+}
 static rz::kbloom KBF; static bool KBON = false;   // -K file.kbf: KeBaB with a blocked Bloom filter of the text's canonical k-mers (rz-kbbuild)
 static u64 HYB_T = 0; static double HYB_A = 0; static bool HYB = false; static thread_local u64 NHYB = 0;
 static std::vector<u64> NSEQ;               // -N: prefix sums of the number of sequences per document
@@ -601,6 +608,7 @@ void classify_bml_dna(E &E_, rz::index &Z, const string &read, u64 L, bool list,
             }
             while (e < n) { ++st.steps; if (!E_.step(xr, rz::comp((unsigned char)R[e]))) break; ++e; if (E::isrz || HYB) xiv.push_back(xr); }
             u64 m = e - a;                                                       // MEM R[a..e)
+            if (MIN3 && distinct3(R + a, m) < MIN3) { ++LC_drop; st.tsearch += rz::now() - t1; x = e - L + 1; continue; }
             double t2;
             if constexpr (E::isrz) {
               if (TAGX) {
@@ -752,10 +760,10 @@ static void hpc_remap(string &line, const std::vector<uint32_t> &ofs) {         
 }
 static int NJ = 1;                           // -j: threads
 static std::mutex CNT_m;
-static u64 T_TR_mems = 0, T_TR_trim = 0, T_TR_skip = 0, T_KB_total = 0, T_KB_kept = 0, T_NHYB = 0, T_PX_text = 0, T_PX_phr = 0, T_PX_map = 0, T_TAG_lf = 0;
+static u64 T_TR_mems = 0, T_TR_trim = 0, T_TR_skip = 0, T_KB_total = 0, T_KB_kept = 0, T_NHYB = 0, T_PX_text = 0, T_PX_phr = 0, T_PX_map = 0, T_TAG_lf = 0, T_LC = 0;
 static void flush_counters() {                   // add this thread's counters to the totals
     std::lock_guard<std::mutex> g(CNT_m);
-    T_TR_mems += TR_mems; T_TR_trim += TR_trim; T_TR_skip += TR_skip; T_KB_total += KB_total; T_KB_kept += KB_kept; T_NHYB += NHYB;
+    T_TR_mems += TR_mems; T_TR_trim += TR_trim; T_TR_skip += TR_skip; T_KB_total += KB_total; T_KB_kept += KB_kept; T_NHYB += NHYB; T_LC += LC_drop;
     T_PX_text += PX_text; T_PX_phr += PX_phr; T_PX_map += PX_map; if (TAGX) T_TAG_lf += TAGX->lf_steps;
     TR_mems = TR_trim = TR_skip = KB_total = KB_kept = NHYB = PX_text = PX_phr = PX_map = 0; if (TAGX) TAGX->lf_steps = 0;
 }
@@ -767,9 +775,9 @@ static void add_stats(Stats &a, const Stats &b) {
 int main(int argc, char **argv) {
     string kbffile, auxfile, csafile, mapfile, srfile, rixfile, vfyfile, nseqfile, tagfile; u64 minlen = 1, bmlL = 0; int opt; bool mem = false, list = false;
     const char *usage = "usage: rz-classify [-j threads] [-M | -L bases [-l]] [-x aux] [-m minlen] [-C csa] [-B map] [-S sri -R rix] index.rz reads.fq out.listings\n";
-    while ((opt = getopt(argc, argv, "MWUlx:m:C:B:S:R:L:V:H:A:N:T:F:j:K:")) != -1) {
+    while ((opt = getopt(argc, argv, "MWUlx:m:C:B:S:R:L:V:H:A:N:T:F:j:K:D:")) != -1) {
         if (opt == 'U') { HPC = true; continue; }
-        if (opt == 'x') auxfile = optarg; else if (opt == 'm') minlen = std::stoull(optarg); else if (opt == 'M') mem = true; else if (opt == 'W') FB = true; else if (opt == 'l') list = true; else if (opt == 'L') bmlL = std::stoull(optarg); else if (opt == 'V') vfyfile = optarg; else if (opt == 'H') HYB_T = std::stoull(optarg); else if (opt == 'A') HYB_A = std::stod(optarg); else if (opt == 'N') nseqfile = optarg; else if (opt == 'T') tagfile = optarg; else if (opt == 'F') FT_t = std::stoi(optarg); else if (opt == 'j') NJ = std::max(1, std::stoi(optarg)); else if (opt == 'C') csafile = optarg; else if (opt == 'B') mapfile = optarg; else if (opt == 'S') srfile = optarg; else if (opt == 'R') rixfile = optarg; else if (opt == 'K') kbffile = optarg;
+        if (opt == 'x') auxfile = optarg; else if (opt == 'm') minlen = std::stoull(optarg); else if (opt == 'M') mem = true; else if (opt == 'W') FB = true; else if (opt == 'l') list = true; else if (opt == 'L') bmlL = std::stoull(optarg); else if (opt == 'V') vfyfile = optarg; else if (opt == 'H') HYB_T = std::stoull(optarg); else if (opt == 'A') HYB_A = std::stod(optarg); else if (opt == 'N') nseqfile = optarg; else if (opt == 'T') tagfile = optarg; else if (opt == 'F') FT_t = std::stoi(optarg); else if (opt == 'j') NJ = std::max(1, std::stoi(optarg)); else if (opt == 'C') csafile = optarg; else if (opt == 'B') mapfile = optarg; else if (opt == 'S') srfile = optarg; else if (opt == 'R') rixfile = optarg; else if (opt == 'K') kbffile = optarg; else if (opt == 'D') MIN3 = std::stoi(optarg);
         else { fputs(usage, stderr); return 1; }
     }
     if (argc - optind != 3) { fputs(usage, stderr); return 1; }
@@ -922,6 +930,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "threads=%d wall %.2f s, %.0f reads/s\n", NJ, WALL, WALL > 0 ? st.nreads / WALL : 0.0);
     if (FT_t) fprintf(stderr, "lookups: table %.1f MB\n", FT_bytes / 1e6);
     if (TRIM_K) fprintf(stderr, "trim k=%lu w=%lu: %lu MEMs trimmed by %.1f bases on average, %lu MEMs dropped\n", TRIM_K, TRIM_W, T_TR_mems, T_TR_mems ? (double)T_TR_trim / T_TR_mems : 0.0, T_TR_skip);
+    if (MIN3) fprintf(stderr, "-D %d: %lu low-complexity MEMs ignored\n", MIN3, T_LC);
     if (KEBAB_K || KBON) fprintf(stderr, "kebab k=%lu: %.1f%% of read bases in pseudo-MEMs of length >= L\n", (u64)(KBON ? KBF.k : KEBAB_K), T_KB_total ? 100.0 * T_KB_kept / T_KB_total : 0.0);
     return st.nfail ? 2 : 0;
 }
