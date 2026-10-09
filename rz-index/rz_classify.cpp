@@ -836,6 +836,16 @@ int main(int argc, char **argv) {
         // reads are taken in chunks of CH by NJ workers and written back in input order
         const size_t CH = 256; std::mutex in_m, out_m; std::condition_variable out_cv; u64 rseq = 0, wseq = 0; bool eof = false;
         std::vector<Stats> tst(NJ);
+        // FASTQ (4 lines per read) or FASTA (one header, then one or more sequence lines); called under in_m
+        string pend; bool fasta = fq.peek() == '>';
+        auto next_read = [&](string &h, string &s) -> bool {
+            string line;
+            if (!fasta) { string plus, q; return std::getline(fq, h) && std::getline(fq, s) && std::getline(fq, plus) && std::getline(fq, q); }
+            if (pend.empty()) { while (std::getline(fq, line)) if (!line.empty() && line[0] == '>') { pend = line; break; } if (pend.empty()) return false; }
+            h = pend; pend.clear(); s.clear();
+            while (std::getline(fq, line)) { if (!line.empty() && line[0] == '>') { pend = line; break; } if (!line.empty() && line.back() == '\r') line.pop_back(); s += line; }
+            return true;
+        };
         auto work = [&](int tid) {
             Stats &ts = tst[tid]; std::vector<string> nm, sq, ln; string h, s, plus, q;
             for (;;) {
@@ -843,7 +853,7 @@ int main(int argc, char **argv) {
                 {
                     std::lock_guard<std::mutex> g(in_m); nm.clear(); sq.clear();
                     while (!eof && nm.size() < CH) {
-                        if (!(std::getline(fq, h) && std::getline(fq, s) && std::getline(fq, plus) && std::getline(fq, q))) { eof = true; break; }
+                        if (!next_read(h, s)) { eof = true; break; }
                         for (auto &c : s) c = (char)toupper((unsigned char)c);
                         size_t sp_ = h.find_first_of(" \t");
                         nm.push_back(h.substr(1, sp_ == string::npos ? string::npos : sp_ - 1)); sq.push_back(s);
