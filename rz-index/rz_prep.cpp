@@ -6,12 +6,6 @@
 //        multi-string BWT with pfp-merge (one string per dataset).
 //   -s : each FASTA file may hold many genomes; split it into genomes by sample ID (header text
 //        before the first '.'), e.g. AllTheBacteria's SAMEA1410869.contig00001 -> SAMEA1410869.
-//   -R : (with -d) put the forward strands of a species' genomes in one dataset and their reverse complements
-//        in the next, which halves the largest file Big-BWT sees; S is then the datasets concatenated in order,
-//        and the .tbl has one line per strand (the reverse complement's file name ends in #rc).  Classify by
-//        species (rz-tagbuild -S): with per-genome tags each strand is its own document.
-//   -c N : (with -d) start a new dataset when the current one would exceed N bases (suffix K, M or G);
-//        with -R, N bounds each strand's dataset.  A genome is never split.
 //   -U : homopolymer compression: replace every run of equal characters of each genome by one character
 //        (before taking the reverse complement, which commutes with it); classify with rz-classify -U.
 //   list.tsv : one genome per line (one file per line; with -s, one or more genomes per file), in tree (left-to-right) order:  <species>\t<fasta[.gz]>
@@ -25,7 +19,6 @@
 
 #include <zlib.h>
 #include <algorithm>
-#include <cctype>
 #include "digest.hpp"
 #include <cstdio>
 #include <cstdint>
@@ -104,19 +97,12 @@ static char comp(char c) {
 }
 
 int main(int argc, char **argv) {
-    bool ds = false, split = false, verify = false, hpc = false, strands = false; uint64_t cap = 0;
+    bool ds = false, split = false, verify = false, hpc = false;
     int mk = 0, mw = 0, ik = 0, iw = 0, bk = 0, bw = 0;
     int a = 1;
     for (; a < argc && argv[a][0] == '-'; ++a) {
         std::string o = argv[a];
-        if (o == "-d") ds = true; else if (o == "-R") strands = true;
-        else if (o == "-c" && a + 1 < argc) {
-            std::string v = argv[++a]; double m = 1; char u = v.empty() ? 0 : toupper(v.back());
-            if (u == 'K') m = 1e3; else if (u == 'M') m = 1e6; else if (u == 'G') m = 1e9;
-            if (m != 1) v.pop_back();
-            cap = (uint64_t)(std::stod(v) * m);
-        }
-        else if (o == "-V") verify = true; else if (o == "-U") hpc = true; else if (o == "-s") split = true;
+        if (o == "-d") ds = true; else if (o == "-U") hpc = true; else if (o == "-s") split = true; else if (o == "-V") verify = true;
         else if (o == "-M" && a + 1 < argc) {
             std::string v = argv[++a]; size_t c = v.find(',');
             if (c == std::string::npos) { std::cerr << "-M needs k,w\n"; return 1; }
@@ -137,8 +123,7 @@ int main(int argc, char **argv) {
         }
         else { std::cerr << "unknown option " << o << "\n"; return 1; }
     }
-    if (argc - a != 2) { std::cerr << "usage: rz-prep [-d [-R] [-c N]] [-s] [-U] [-M k,w [-V]] [-I k,w] [-B k,w] <list.tsv> <out-prefix>\n"; return 1; }
-    if ((strands || cap) && (!ds || ik)) { std::cerr << "-R and -c need -d, and not -I\n"; return 1; }
+    if (argc - a != 2) { std::cerr << "usage: rz-prep [-d] [-s] [-U] [-M k,w [-V]] [-I k,w] [-B k,w] <list.tsv> <out-prefix>\n"; return 1; }
     if (hpc && (bk || ik || mk)) { std::cerr << "-U cannot be combined with digests\n"; return 1; }
     uint64_t raw = 0, asym = 0;
     if (bk) {   // pass 1: which minimizer codes occur (on either strand); give each a byte
@@ -201,26 +186,6 @@ int main(int argc, char **argv) {
     std::ofstream tbl(out + ".tbl");
     std::string line;
     uint64_t pos = 0, idx = 0;
-    // -R / -c: the current chunk is written to dataset files (forward, and with -R the reverse complements in a
-    // second file); when it closes, they are appended to S in order and the reverse complements' .tbl lines,
-    // whose starts are known only then, are written.
-    const bool chunked = strands || cap;
-    FILE *cf = nullptr, *cr = nullptr; std::string cfn, crn; uint64_t cflen = 0, crlen = 0;
-    std::vector<std::pair<std::string, uint64_t>> rclines;     // (species\tname\tlength, offset in the rc file)
-    auto append = [&](const std::string &fn) {
-        FILE *in = fopen(fn.c_str(), "rb"); std::vector<char> b(1 << 22); size_t k;
-        while ((k = fread(b.data(), 1, b.size(), in)) > 0) fwrite(b.data(), 1, k, fs);
-        fclose(in);
-    };
-    auto close_chunk = [&]() {
-        if (!cf) return;
-        fclose(cf); append(cfn); dsl << cfn << "\n";
-        if (strands) {
-            fclose(cr); append(crn); dsl << crn << "\n";
-            for (auto &x : rclines) tbl << idx++ << "\t" << x.first << "\t" << pos + cflen + x.second << "\n";
-        }
-        pos += cflen + crlen; cf = cr = nullptr; cflen = crlen = 0; rclines.clear();
-    };
     while (std::getline(list, line)) {
         if (line.empty() || line[0] == '#') continue;
         std::string species = "-", path = line;
@@ -263,22 +228,6 @@ int main(int argc, char **argv) {
             for (auto &c : rc) c = comp(c);
         }
         std::string &g = gp.second;
-        if (chunked) {
-            uint64_t add = strands ? g.size() + 1 : 2 * (g.size() + 1);
-            if (cf && (species != last_species || (cap && cflen + add > cap))) close_chunk();
-            if (!cf) {
-                cfn = out + ".ds" + std::to_string(nds++) + ".S"; cf = fopen(cfn.c_str(), "wb");
-                if (strands) { crn = out + ".ds" + std::to_string(nds++) + ".S"; cr = fopen(crn.c_str(), "wb"); }
-                last_species = species;
-            }
-            tbl << idx++ << "\t" << species << "\t" << gname << "\t" << g.size() << "\t" << pos + cflen << "\n";
-            fwrite(g.data(), 1, g.size(), cf); fputc('X', cf); cflen += g.size() + 1;
-            if (strands) {
-                rclines.push_back({species + "\t" + gname + "#rc\t" + std::to_string(rc.size()), crlen});
-                fwrite(rc.data(), 1, rc.size(), cr); fputc('X', cr); crlen += rc.size() + 1;
-            } else { fwrite(rc.data(), 1, rc.size(), cf); fputc('X', cf); cflen += rc.size() + 1; }
-            continue;
-        }
         tbl << idx << "\t" << species << "\t" << gname << "\t" << g.size() << "\t" << pos << "\n";
         fwrite(g.data(), 1, g.size(), fs); fputc('X', fs);
         fwrite(rc.data(), 1, rc.size(), fs); fputc('X', fs);
@@ -297,7 +246,6 @@ int main(int argc, char **argv) {
         ++idx;
         }
     }
-    if (chunked) close_chunk();
     fclose(fs);
     if (fd) fclose(fd);
     std::cerr << "genomes=" << idx << " |S|=" << pos;
