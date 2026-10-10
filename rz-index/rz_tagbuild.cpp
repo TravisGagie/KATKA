@@ -24,7 +24,7 @@ template <class T> static int run(int argc, char **argv) {
     if (argc < 4) { fprintf(stderr, "usage: rz-tagbuild prefix s out.tag [-n] [-S]\n  writes out.tag and, unless -n, out.tag.rmq (for listing)\n  -S: the tag of a position is the species of its genome (column 2 of prefix.tbl, numbered in order of\n      first appearance) instead of the genome itself; cached in prefix.sp.tagruns\n"); return 1; }
     const std::string cache = p_cache(argv[1], bysp);
     std::string p = argv[1]; u64 s = std::stoull(argv[2]); auto T0 = std::chrono::steady_clock::now();
-    std::vector<T> rs; std::vector<uint16_t> tg; u64 n = 0;
+    std::vector<T> rs; std::vector<uint16_t> tg; u64 n = 0, nruns = 0;
     {   // stage 1
         std::ifstream c(cache, std::ios::binary);
         if (c) {
@@ -41,6 +41,7 @@ template <class T> static int run(int argc, char **argv) {
                 cls.push_back(it->second);
             }
             if (bysp) fprintf(stderr, "tags: %zu species over %zu genomes\n", spid.size(), start.size());
+            {
             std::ifstream ri_in(p + ".rix", std::ios::binary);
             if (!ri_in) { fprintf(stderr, "rz-tagbuild: %s.rix not found (build it with rz-build -A)\n", p.c_str()); return 1; }
             rz::rindex RI; RI.load(ri_in);
@@ -53,6 +54,13 @@ template <class T> static int run(int argc, char **argv) {
             u64 d = RI.esa[RI.bwt.R - 1];               // SA[n-1]
             int prev = -1; u64 g0 = 0, g1 = start.size() > 1 ? start[1] : ~0ULL;   // cached document [g0, g1)
             int cd = 0;
+            // runs are completed bottom-up; write each one to two temporary files as it completes, so that stage 1
+            // needs memory only for the r-index samples, and read them back (reversed) once the samples are freed
+            FILE *fr = fopen((cache + ".rows.tmp").c_str(), "wb"), *ft = fopen((cache + ".tags.tmp").c_str(), "wb");
+            if (!fr || !ft) { fprintf(stderr, "rz-tagbuild: cannot write temporary files next to %s\n", cache.c_str()); return 1; }
+            std::vector<T> brow; std::vector<uint16_t> btag; brow.reserve(1 << 20); btag.reserve(1 << 20);
+            auto flush = [&]() { fwrite(brow.data(), sizeof(T), brow.size(), fr); fwrite(btag.data(), 2, btag.size(), ft); brow.clear(); btag.clear(); };
+            T crow = 0; uint16_t ctag = 0;
             for (u64 row = n; row-- > 0;) {
                 u64 q;                                  // S position; a terminator gets its string's last character
                 if (K == 1) q = d < N ? d : N - 1;
@@ -65,19 +73,36 @@ template <class T> static int run(int argc, char **argv) {
                     g0 = start[cd]; g1 = cd + 1 < (int)start.size() ? start[cd + 1] : ~0ULL;
                 }
                 int tv = bysp ? cls[cd] : cd;
-                if (tv != prev) { rs.push_back(row); tg.push_back(tv); prev = tv; } else rs.back() = row;   // runs found bottom-up
+                if (tv != prev) {                       // runs found bottom-up
+                    if (prev >= 0) { brow.push_back(crow); btag.push_back(ctag); ++nruns; if (brow.size() == (1u << 20)) flush(); }
+                    ctag = (uint16_t)tv; prev = tv;
+                }
+                crow = (T)row;
                 if (row) d = RI.phi(d);
             }
-            std::reverse(rs.begin(), rs.end()); std::reverse(tg.begin(), tg.end());
+            brow.push_back(crow); btag.push_back(ctag); ++nruns; flush(); fclose(fr); fclose(ft);
+        }   // the r-index samples are freed here
+        if (nruns) {
+            rs.resize(nruns); tg.resize(nruns);
+            FILE *fr = fopen((cache + ".rows.tmp").c_str(), "rb"), *ft = fopen((cache + ".tags.tmp").c_str(), "rb");
+            std::vector<T> brow(1 << 20); std::vector<uint16_t> btag(1 << 20); u64 i = nruns;
+            for (size_t k; (k = fread(brow.data(), sizeof(T), brow.size(), fr)) > 0;) {
+                if (fread(btag.data(), 2, k, ft) != k) { fprintf(stderr, "rz-tagbuild: short read of temporary file\n"); return 1; }
+                for (size_t q = 0; q < k; ++q) { --i; rs[i] = brow[q]; tg[i] = btag[q]; }
+            }
+            fclose(fr); fclose(ft); std::remove((cache + ".rows.tmp").c_str()); std::remove((cache + ".tags.tmp").c_str());
+            if (i != 0) { fprintf(stderr, "rz-tagbuild: temporary file has the wrong length\n"); return 1; }
             if (rs.empty() || rs[0] != 0) { fprintf(stderr, "rz-tagbuild: internal error: no run at row 0\n"); return 1; }
             std::ofstream o(cache, std::ios::binary); u64 r = rs.size();
             o.write((char *)&n, 8); o.write((char *)&r, 8); o.write((char *)rs.data(), sizeof(T) * r); o.write((char *)tg.data(), 2 * r);
+        }
         }
     }
     u64 rho = rs.size();
     fprintf(stderr, "n=%lu runs=%lu (stage 1 %.0f s)\n", n, rho, secs(T0));
     tag_index X; X.n = n; X.rho = rho; X.s = s;
     { sdsl::sd_vector_builder b(n, rs.size()); for (u64 r : rs) b.set(r); X.RB = sdsl::sd_vector<>(b); }
+    if (s == 1) std::vector<T>().swap(rs);      // the run starts are now in RB
     sdsl::util::init_support(X.RBr, &X.RB); sdsl::util::init_support(X.RBs, &X.RB);
     if (!norm) {   // RMQ over C (previous run with the same tag, +1; 0 if none)
         sdsl::int_vector<> C(rho, 0, sdsl::bits::hi(rho + 1) + 1); std::vector<uint32_t> last(1 << 16, 0);

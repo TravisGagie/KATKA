@@ -56,7 +56,7 @@ ours_opts() {   # options for configuration $1, ending with the index
 }
 ours_files() { case $1 in ud_*) echo "$W/rz/bac.csa $W/rz/bac.s1.tag";; dg_*) echo "$W/rzdg/bac.csa $W/rzdg/bac.s1.tag $W/rzdg/bac.map";; esac; }
 for c in $OURS; do for f in $(ours_files $c) $(ours_opts $c | awk '{print $NF}'); do
-  [ -s $f ] || fail "missing $f (see the README: run_silva.sh, run_silva_dg.sh, build_indexes.sh)"; done; done
+  [ -s $f ] || fail "missing $f (build it with: INDEXES=\"rz rzdg\" ./build_katka.sh)"; done; done
 cl_opts() {
   case $1 in
     full_text)  echo "--num-col 7" ;;
